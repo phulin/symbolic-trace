@@ -71,7 +71,7 @@ valueToLitExpr :: Value -> Expr
 valueToLitExpr = undefined
 
 updateInfo :: Info -> Instruction -> Info
-updateInfo info (AddInst _ _ _ _ _ _ lhs rhs) = M.insert (id) (AddExpr (valueToLitExpr lhs) (valueToLitExpr rhs))
+updateInfo info (AddInst _ (Just out) _ _ _ _ lhs rhs) = M.insert out (AddExpr (valueToLitExpr lhs) (valueToLitExpr rhs))
 updateInfo info _ = info
 -- updateInfo info (Mov srcLoc dstLoc) = M.insert dstLoc (valueAt srcLoc info) info
 -- updateInfo info (Add srcReg dstReg) = (mathUpdate AddExpr srcReg dstReg) info

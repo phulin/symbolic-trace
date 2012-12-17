@@ -2,17 +2,19 @@
 
 module Main where
 
-import qualified Data.LLVM.Types as LT
+import Data.LLVM.Types
 import LLVM.Parse
 import qualified Data.Map as M
 import qualified Data.Bits as B
 import Data.Word
+import Control.Applicative
+import Data.Maybe
 
 -- Instruction representation
 type Addr = Word64
 type UInt = Word64
 
-data Expr a =
+data Expr =
     AddExpr Expr Expr |
     SubExpr Expr Expr |
     MulExpr Expr Expr |
@@ -33,9 +35,9 @@ data Expr a =
     FPToUIExpr Expr |
     SIToFPExpr Expr |
     UIToFPExpr Expr |
-    ILitExpr UInt |
+    ILitExpr Integer |
     FLitExpr Double |
-    InputExpr Loc
+    InputExpr Identifier
     deriving (Eq, Ord, Show)
 -- Representation of our [partial] knowledge of machine state.
 type Info = M.Map Identifier Expr
@@ -63,27 +65,64 @@ noInfo = M.empty
 valueAt :: Identifier -> Info -> Expr
 valueAt id =  M.findWithDefault (InputExpr id) id
 
-mathUpdate :: (Expr -> Expr -> Expr) -> Reg -> Reg -> Info -> Info
-mathUpdate exprBin srcReg dstReg info = M.insert (RegLoc dstReg) newExpr info
-    where newExpr = simplify $ exprBin (valueAt (RegLoc srcReg) info) (valueAt (RegLoc dstReg) info)
+valueContentToLitExpr :: ValueContent -> Maybe Expr
+valueContentToLitExpr (ConstantC (ConstantFP _ _ value)) = Just $ FLitExpr value 
+valueContentToLitExpr (ConstantC (ConstantInt _ _ value)) = Just $ ILitExpr value 
+valueContentToLitExpr _ = Nothing
 
-valueToLitExpr :: Value -> Expr
-valueToLitExpr = undefined
+valueToLitExpr :: Value -> Maybe Expr
+valueToLitExpr = valueContentToLitExpr . valueContent
+
+binaryInstToExprConstructor :: Instruction -> Maybe (Expr -> Expr -> Expr)
+binaryInstToExprConstructor AddInst{} = Just AddExpr
+binaryInstToExprConstructor SubInst{} = Just SubExpr
+binaryInstToExprConstructor MulInst{} = Just MulExpr
+binaryInstToExprConstructor DivInst{} = Just DivExpr
+binaryInstToExprConstructor RemInst{} = Just RemExpr
+binaryInstToExprConstructor ShlInst{} = Just ShlExpr
+binaryInstToExprConstructor LshrInst{} = Just LshrExpr
+binaryInstToExprConstructor AshrInst{} = Just AshrExpr
+binaryInstToExprConstructor AndInst{} = Just AndExpr
+binaryInstToExprConstructor OrInst{} = Just OrExpr
+binaryInstToExprConstructor XorInst{} = Just XorExpr
+binaryInstToExprConstructor _ = Nothing
+
+binaryInstToExpr :: Instruction -> Maybe Expr
+binaryInstToExpr inst = do
+    exprConstructor <- binaryInstToExprConstructor inst
+    lhs <- valueToLitExpr $ binaryLhs inst
+    rhs <- valueToLitExpr $ binaryRhs inst
+    return $ exprConstructor lhs rhs
+
+unaryInstToExprConstructor :: Instruction -> Maybe (Expr -> Expr)
+unaryInstToExprConstructor TruncInst{} = Just TruncExpr
+unaryInstToExprConstructor ZExtInst{} = Just ZExtExpr
+unaryInstToExprConstructor SExtInst{} = Just SExtExpr
+unaryInstToExprConstructor FPTruncInst{} = Just FPTruncExpr
+unaryInstToExprConstructor FPExtInst{} = Just FPExtExpr
+unaryInstToExprConstructor FPToSIInst{} = Just FPToSIExpr
+unaryInstToExprConstructor FPToUIInst{} = Just FPToUIExpr
+unaryInstToExprConstructor SIToFPInst{} = Just SIToFPExpr
+unaryInstToExprConstructor UIToFPInst{} = Just UIToFPExpr
+unaryInstToExprConstructor _ = Nothing
+
+unaryInstToExpr :: Instruction -> Maybe Expr
+unaryInstToExpr inst = do
+    exprConstructor <- unaryInstToExprConstructor inst
+    value <- valueToLitExpr $ castedValue inst
+    return $ exprConstructor value
 
 updateInfo :: Info -> Instruction -> Info
-updateInfo info (AddInst _ (Just out) _ _ _ _ lhs rhs) = M.insert out (AddExpr (valueToLitExpr lhs) (valueToLitExpr rhs))
-updateInfo info _ = info
--- updateInfo info (Mov srcLoc dstLoc) = M.insert dstLoc (valueAt srcLoc info) info
--- updateInfo info (Add srcReg dstReg) = (mathUpdate AddExpr srcReg dstReg) info
--- updateInfo info (Mul srcReg dstReg) = (mathUpdate MulExpr srcReg dstReg) info
--- updateInfo info (Xor srcReg dstReg) = (mathUpdate XorExpr srcReg dstReg) info
--- updateInfo info (Put value dstLoc) = M.insert dstLoc (LitExpr value) info
+updateInfo info inst = fromMaybe info $ do
+    id <- instructionName inst
+    expr <- (binaryInstToExpr inst) <|> (unaryInstToExpr inst)
+    return $ M.insert id expr info
 
-runInstrs :: Info -> BasicBlock -> Info
-runInstrs = foldl updateInfo
+runBlock :: Info -> BasicBlock -> Info
+runBlock info block = foldl updateInfo info $ basicBlockInstructions block
 
 main :: IO ()
 main = do
-    (Right theMod) <- parseLLVMFile defaultParserOptions "/tmp/llvm-mod.bc"
-    print $ map (LT.identifierAsString . LT.functionName) $ LT.moduleDefinedFunctions theMod
+    (Right theMod) <- parseLLVMFile defaultParserOptions "/home/phulin/UROP/invsqrt.bc"
+    print $ map functionName $ moduleDefinedFunctions theMod
 

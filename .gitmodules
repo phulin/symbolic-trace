@@ -1,0 +1,6 @@
+[submodule "llvm-base-types"]
+	path = llvm-base-types
+	url = git://github.com/phulin/llvm-base-types.git
+[submodule "llvm-data-interop"]
+	path = llvm-data-interop
+	url = git://github.com/travitch/llvm-data-interop.git

@@ -40,6 +40,7 @@ data Expr =
     PtrToIntExpr Expr |
     IntToPtrExpr Expr |
     BitcastExpr Expr |
+    LoadExpr Expr |
     ILitExpr Integer |
     FLitExpr Double |
     InputExpr Loc
@@ -107,6 +108,12 @@ castInstToExpr info inst = do
     value <- valueToExpr info $ castedValue inst
     return $ exprConstructor value
 
+loadInstToExpr :: Info -> Instruction -> Maybe Expr
+loadInstToExpr info inst@LoadInst{ loadAddress = addr } = do
+    addrExpr <- valueToExpr info addr
+    return $ LoadExpr addrExpr
+loadInstToExpr _ _ = Nothing
+
 traceInst :: Instruction -> a -> a
 traceInst inst = trace ("Couldn't process inst " ++ (show inst))
 
@@ -121,10 +128,16 @@ maybeTraceInst inst@CallInst{} = case valueContent $ callFunction inst of
     _ -> traceInst inst
 maybeTraceInst inst = traceInst inst
 
+(<||>) :: Alternative f => (a -> f b) -> (a -> f b) -> a -> f b
+(<||>) f1 f2 a = f1 a <|> f2 a
+
+(<|||>) :: Alternative f => (a -> b -> f c) -> (a -> b -> f c) -> a -> b -> f c
+(<|||>) f1 f2 a b = f1 a b <|> f2 a b
+
 updateInfo :: Info -> Instruction -> Info
 updateInfo info inst = fromMaybe (maybeTraceInst inst info) $ do
     id <- instructionName inst
-    expr <- (binaryInstToExpr info inst) <|> (castInstToExpr info inst)
+    expr <- (binaryInstToExpr info inst) <|> (castInstToExpr info inst) <|> (loadInstToExpr info inst)
     return $ M.insert (IdLoc id) expr info
 
 runBlock :: Info -> BasicBlock -> Info
@@ -137,9 +150,13 @@ deriving instance Show GlobalVariable
 deriving instance Show BasicBlock
 deriving instance Show ValueContent
 
+showInfo :: Info -> String
+showInfo = unlines . map showEach . M.toList
+    where showEach (key, val) = show key ++ " -> " ++ show val
+
 main :: IO ()
 main = do
     (Right theMod) <- parseLLVMFile defaultParserOptions "/tmp/llvm-mod.bc"
     let func = fromMaybe (error "Couldn't find function") $ findFunctionByName theMod "tcg-llvm-tb-1229-4004a0-main"
     let basicBlock = head $ functionBody $ func
-    print $ runBlock noInfo basicBlock
+    putStrLn $ showInfo $ runBlock noInfo basicBlock

@@ -9,6 +9,7 @@ import qualified Data.Bits as B
 import Data.Word
 import Control.Applicative
 import Data.Maybe
+import Debug.Trace
 
 -- Instruction representation
 type Addr = Word64
@@ -65,13 +66,16 @@ noInfo = M.empty
 valueAt :: Identifier -> Info -> Expr
 valueAt id =  M.findWithDefault (InputExpr id) id
 
-valueContentToLitExpr :: ValueContent -> Maybe Expr
-valueContentToLitExpr (ConstantC (ConstantFP _ _ value)) = Just $ FLitExpr value 
-valueContentToLitExpr (ConstantC (ConstantInt _ _ value)) = Just $ ILitExpr value 
-valueContentToLitExpr _ = Nothing
+valueContentToExpr :: Info -> ValueContent -> Maybe Expr
+valueContentToExpr info (ConstantC (ConstantFP _ _ value)) = Just $ FLitExpr value 
+valueContentToExpr info (ConstantC (ConstantInt _ _ value)) = Just $ ILitExpr value 
+valueContentToExpr info (InstructionC inst) = do
+    name <- instructionName inst
+    return $ valueAt name info
+valueContentToExpr info val = trace ("Couldn't find expr for " ++ show val) Nothing
 
-valueToLitExpr :: Value -> Maybe Expr
-valueToLitExpr = valueContentToLitExpr . valueContent
+valueToExpr :: Info -> Value -> Maybe Expr
+valueToExpr info = valueContentToExpr info . valueContent
 
 binaryInstToExprConstructor :: Instruction -> Maybe (Expr -> Expr -> Expr)
 binaryInstToExprConstructor AddInst{} = Just AddExpr
@@ -87,11 +91,11 @@ binaryInstToExprConstructor OrInst{} = Just OrExpr
 binaryInstToExprConstructor XorInst{} = Just XorExpr
 binaryInstToExprConstructor _ = Nothing
 
-binaryInstToExpr :: Instruction -> Maybe Expr
-binaryInstToExpr inst = do
+binaryInstToExpr :: Info -> Instruction -> Maybe Expr
+binaryInstToExpr info inst = do
     exprConstructor <- binaryInstToExprConstructor inst
-    lhs <- valueToLitExpr $ binaryLhs inst
-    rhs <- valueToLitExpr $ binaryRhs inst
+    lhs <- valueToExpr info $ binaryLhs inst
+    rhs <- valueToExpr info $ binaryRhs inst
     return $ exprConstructor lhs rhs
 
 unaryInstToExprConstructor :: Instruction -> Maybe (Expr -> Expr)
@@ -106,23 +110,30 @@ unaryInstToExprConstructor SIToFPInst{} = Just SIToFPExpr
 unaryInstToExprConstructor UIToFPInst{} = Just UIToFPExpr
 unaryInstToExprConstructor _ = Nothing
 
-unaryInstToExpr :: Instruction -> Maybe Expr
-unaryInstToExpr inst = do
+unaryInstToExpr :: Info -> Instruction -> Maybe Expr
+unaryInstToExpr info inst = do
     exprConstructor <- unaryInstToExprConstructor inst
-    value <- valueToLitExpr $ castedValue inst
+    value <- valueToExpr info $ castedValue inst
     return $ exprConstructor value
 
 updateInfo :: Info -> Instruction -> Info
 updateInfo info inst = fromMaybe info $ do
     id <- instructionName inst
-    expr <- (binaryInstToExpr inst) <|> (unaryInstToExpr inst)
+    expr <- (binaryInstToExpr info inst) <|> (unaryInstToExpr info inst)
     return $ M.insert id expr info
 
 runBlock :: Info -> BasicBlock -> Info
 runBlock info block = foldl updateInfo info $ basicBlockInstructions block
 
+deriving instance Show Constant
+deriving instance Show ExternalValue
+deriving instance Show GlobalAlias
+deriving instance Show GlobalVariable
+deriving instance Show BasicBlock
+deriving instance Show ValueContent
+
 main :: IO ()
 main = do
     (Right theMod) <- parseLLVMFile defaultParserOptions "/home/phulin/UROP/invsqrt.bc"
-    print $ map functionName $ moduleDefinedFunctions theMod
-
+    let basicBlock = head $ functionBody $ head $ moduleDefinedFunctions theMod
+    print $ runBlock noInfo basicBlock

@@ -1,4 +1,4 @@
--- Symbolic evaluator for basic bidks
+-- Symbolic evaluator for basic blocks
 
 module Main where
 
@@ -15,6 +15,7 @@ import Debug.Trace
 type Addr = Word64
 type UInt = Word64
 
+data Loc = IdLoc Identifier | MemLoc Addr
 data Expr =
     AddExpr Expr Expr |
     SubExpr Expr Expr |
@@ -38,7 +39,7 @@ data Expr =
     UIToFPExpr Expr |
     ILitExpr Integer |
     FLitExpr Double |
-    InputExpr Identifier
+    InputExpr Loc
     deriving (Eq, Ord, Show)
 -- Representation of our [partial] knowledge of machine state.
 type Info = M.Map Identifier Expr

@@ -11,11 +11,11 @@ import Control.Applicative
 import Data.Maybe
 import Debug.Trace
 
--- Instruction representation
 type Addr = Word64
 type UInt = Word64
 
 data Loc = IdLoc Identifier | MemLoc Addr
+    deriving (Eq, Ord, Show)
 data Expr =
     AddExpr Expr Expr |
     SubExpr Expr Expr |
@@ -41,31 +41,15 @@ data Expr =
     FLitExpr Double |
     InputExpr Loc
     deriving (Eq, Ord, Show)
+
 -- Representation of our [partial] knowledge of machine state.
-type Info = M.Map Identifier Expr
+type Info = M.Map Loc Expr
 
 noInfo :: Info
 noInfo = M.empty
 
--- simplify :: Expr -> Expr
--- simplify (AddExpr (LitExpr l1) (LitExpr l2)) = LitExpr $ l1 + l2
--- simplify (AddExpr (LitExpr 0) e) = e
--- simplify (AddExpr e (LitExpr 0)) = e
--- simplify (MulExpr (LitExpr l1) (LitExpr l2)) = LitExpr $ l1 * l2 
--- simplify (MulExpr (LitExpr 0) e) = LitExpr 0
--- simplify (MulExpr e (LitExpr 0)) = LitExpr 0
--- simplify (MulExpr (LitExpr 1) e) = e
--- simplify (MulExpr e (LitExpr 1)) = e
--- simplify (XorExpr (LitExpr l1) (LitExpr l2)) = LitExpr $ B.xor l1 l2
--- simplify (XorExpr (LitExpr 0) e) = e
--- simplify (XorExpr e (LitExpr 0)) = e
--- simplify e@(XorExpr e1 e2)
---     | e1 == e2 = LitExpr 0
---     | otherwise = e
--- simplify e = e
-
-valueAt :: Identifier -> Info -> Expr
-valueAt id =  M.findWithDefault (InputExpr id) id
+valueAt :: Loc -> Info -> Expr
+valueAt loc =  M.findWithDefault (InputExpr loc) loc
 
 valueContentToExpr :: Info -> ValueContent -> Maybe Expr
 valueContentToExpr info (ConstantC (ConstantFP _ _ value)) = Just $ FLitExpr value 
@@ -99,28 +83,28 @@ binaryInstToExpr info inst = do
     rhs <- valueToExpr info $ binaryRhs inst
     return $ exprConstructor lhs rhs
 
-unaryInstToExprConstructor :: Instruction -> Maybe (Expr -> Expr)
-unaryInstToExprConstructor TruncInst{} = Just TruncExpr
-unaryInstToExprConstructor ZExtInst{} = Just ZExtExpr
-unaryInstToExprConstructor SExtInst{} = Just SExtExpr
-unaryInstToExprConstructor FPTruncInst{} = Just FPTruncExpr
-unaryInstToExprConstructor FPExtInst{} = Just FPExtExpr
-unaryInstToExprConstructor FPToSIInst{} = Just FPToSIExpr
-unaryInstToExprConstructor FPToUIInst{} = Just FPToUIExpr
-unaryInstToExprConstructor SIToFPInst{} = Just SIToFPExpr
-unaryInstToExprConstructor UIToFPInst{} = Just UIToFPExpr
-unaryInstToExprConstructor _ = Nothing
+castInstToExprConstructor :: Instruction -> Maybe (Expr -> Expr)
+castInstToExprConstructor TruncInst{} = Just TruncExpr
+castInstToExprConstructor ZExtInst{} = Just ZExtExpr
+castInstToExprConstructor SExtInst{} = Just SExtExpr
+castInstToExprConstructor FPTruncInst{} = Just FPTruncExpr
+castInstToExprConstructor FPExtInst{} = Just FPExtExpr
+castInstToExprConstructor FPToSIInst{} = Just FPToSIExpr
+castInstToExprConstructor FPToUIInst{} = Just FPToUIExpr
+castInstToExprConstructor SIToFPInst{} = Just SIToFPExpr
+castInstToExprConstructor UIToFPInst{} = Just UIToFPExpr
+castInstToExprConstructor _ = Nothing
 
-unaryInstToExpr :: Info -> Instruction -> Maybe Expr
-unaryInstToExpr info inst = do
-    exprConstructor <- unaryInstToExprConstructor inst
+castInstToExpr :: Info -> Instruction -> Maybe Expr
+castInstToExpr info inst = do
+    exprConstructor <- castInstToExprConstructor inst
     value <- valueToExpr info $ castedValue inst
     return $ exprConstructor value
 
 updateInfo :: Info -> Instruction -> Info
 updateInfo info inst = fromMaybe info $ do
     id <- instructionName inst
-    expr <- (binaryInstToExpr info inst) <|> (unaryInstToExpr info inst)
+    expr <- (binaryInstToExpr info inst) <|> (castInstToExpr info inst)
     return $ M.insert id expr info
 
 runBlock :: Info -> BasicBlock -> Info

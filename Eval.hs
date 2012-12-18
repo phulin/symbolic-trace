@@ -37,6 +37,9 @@ data Expr =
     FPToUIExpr Expr |
     SIToFPExpr Expr |
     UIToFPExpr Expr |
+    PtrToIntExpr Expr |
+    IntToPtrExpr Expr |
+    BitcastExpr Expr |
     ILitExpr Integer |
     FLitExpr Double |
     InputExpr Loc
@@ -56,7 +59,7 @@ valueContentToExpr info (ConstantC (ConstantFP _ _ value)) = Just $ FLitExpr val
 valueContentToExpr info (ConstantC (ConstantInt _ _ value)) = Just $ ILitExpr value 
 valueContentToExpr info (InstructionC inst) = do
     name <- instructionName inst
-    return $ valueAt name info
+    return $ valueAt (IdLoc name) info
 valueContentToExpr info val = trace ("Couldn't find expr for " ++ show val) Nothing
 
 valueToExpr :: Info -> Value -> Maybe Expr
@@ -93,6 +96,9 @@ castInstToExprConstructor FPToSIInst{} = Just FPToSIExpr
 castInstToExprConstructor FPToUIInst{} = Just FPToUIExpr
 castInstToExprConstructor SIToFPInst{} = Just SIToFPExpr
 castInstToExprConstructor UIToFPInst{} = Just UIToFPExpr
+castInstToExprConstructor PtrToIntInst{} = Just PtrToIntExpr
+castInstToExprConstructor IntToPtrInst{} = Just IntToPtrExpr
+castInstToExprConstructor BitcastInst{} = Just BitcastExpr
 castInstToExprConstructor _ = Nothing
 
 castInstToExpr :: Info -> Instruction -> Maybe Expr
@@ -101,11 +107,25 @@ castInstToExpr info inst = do
     value <- valueToExpr info $ castedValue inst
     return $ exprConstructor value
 
+traceInst :: Instruction -> a -> a
+traceInst inst = trace ("Couldn't process inst " ++ (show inst))
+
+t :: (Show a) => a -> a
+t x = traceShow x x
+
+maybeTraceInst :: Instruction -> a -> a
+maybeTraceInst inst@CallInst{} = case valueContent $ callFunction inst of
+    ExternalFunctionC func
+        | (identifierAsString $ externalFunctionName func) == "printdynval" -> id
+        | otherwise -> traceInst inst
+    _ -> traceInst inst
+maybeTraceInst inst = traceInst inst
+
 updateInfo :: Info -> Instruction -> Info
-updateInfo info inst = fromMaybe info $ do
+updateInfo info inst = fromMaybe (maybeTraceInst inst info) $ do
     id <- instructionName inst
     expr <- (binaryInstToExpr info inst) <|> (castInstToExpr info inst)
-    return $ M.insert id expr info
+    return $ M.insert (IdLoc id) expr info
 
 runBlock :: Info -> BasicBlock -> Info
 runBlock info block = foldl updateInfo info $ basicBlockInstructions block
@@ -119,6 +139,7 @@ deriving instance Show ValueContent
 
 main :: IO ()
 main = do
-    (Right theMod) <- parseLLVMFile defaultParserOptions "/home/phulin/UROP/invsqrt.bc"
-    let basicBlock = head $ functionBody $ head $ moduleDefinedFunctions theMod
+    (Right theMod) <- parseLLVMFile defaultParserOptions "/tmp/llvm-mod.bc"
+    let func = fromMaybe (error "Couldn't find function") $ findFunctionByName theMod "tcg-llvm-tb-1229-4004a0-main"
+    let basicBlock = head $ functionBody $ func
     print $ runBlock noInfo basicBlock

@@ -4,6 +4,7 @@ module Main where
 
 import Data.LLVM.Types
 import LLVM.Parse
+import qualified Data.List as L
 import qualified Data.Map as M
 import qualified Data.Bits as B
 import Data.Word
@@ -41,6 +42,8 @@ data Expr =
     IntToPtrExpr Expr |
     BitcastExpr Expr |
     LoadExpr Expr |
+    BinaryHelperExpr Identifier Expr Expr |
+    CastHelperExpr Identifier Expr |
     ILitExpr Integer |
     FLitExpr Double |
     InputExpr Loc
@@ -55,12 +58,17 @@ noInfo = M.empty
 valueAt :: Loc -> Info -> Expr
 valueAt loc =  M.findWithDefault (InputExpr loc) loc
 
+instructionToExpr :: Info -> Instruction -> Maybe Expr
+instructionToExpr info inst = do
+    name <- instructionName inst
+    return $ valueAt (IdLoc name) info
+
 valueContentToExpr :: Info -> ValueContent -> Maybe Expr
 valueContentToExpr info (ConstantC (ConstantFP _ _ value)) = Just $ FLitExpr value 
 valueContentToExpr info (ConstantC (ConstantInt _ _ value)) = Just $ ILitExpr value 
-valueContentToExpr info (InstructionC inst) = do
-    name <- instructionName inst
-    return $ valueAt (IdLoc name) info
+valueContentToExpr info (ConstantC (ConstantValue{ constantInstruction = inst })) = instructionToExpr info inst
+valueContentToExpr info (InstructionC inst) = instructionToExpr info inst
+valueContentToExpr info (ArgumentC (Argument{ argumentName = name })) = Just $ InputExpr (IdLoc name)
 valueContentToExpr info val = trace ("Couldn't find expr for " ++ show val) Nothing
 
 valueToExpr :: Info -> Value -> Maybe Expr
@@ -118,7 +126,7 @@ gepInstToExpr :: Info -> Instruction -> Maybe Expr
 gepInstToExpr info inst@GetElementPtrInst{ _instructionType = instType,
                                            getElementPtrValue = value,
                                            getElementPtrIndices = indices } = do
-    valueExpr <- valueToExpr info $ trace ("Value: " ++ show value) value
+    valueExpr <- valueToExpr info value
     size <- case instType of
         TypePointer (TypeInteger bits) _ -> Just $ bits `quot` 8
         other -> trace ("Type failure: " ++ show other) Nothing
@@ -126,6 +134,24 @@ gepInstToExpr info inst@GetElementPtrInst{ _instructionType = instType,
         [ConstantC (ConstantInt{ constantIntValue = idx })] -> Just idx
         other -> trace ("Value failure: " ++ show other) Nothing
     return $ IntToPtrExpr $ AddExpr valueExpr (ILitExpr $ fromIntegral size * index)
+gepInstToExpr _ _ = Nothing
+
+helperInstToExpr :: Info -> Instruction -> Maybe Expr
+helperInstToExpr info inst@CallInst{ callFunction = funcValue,
+                                     callArguments = funcArgs } = case valueContent funcValue of
+    ExternalFunctionC (ExternalFunction{ externalFunctionName = funcId })
+        | "helper_" `L.isPrefixOf` identifierAsString funcId -> case funcArgs of
+            [(argVal, _)] -> do
+                argExpr <- valueToExpr info argVal
+                return $ CastHelperExpr funcId argExpr
+            [(argVal1, _), (argVal2, _)] -> do
+                argExpr1 <- valueToExpr info argVal1
+                argExpr2 <- valueToExpr info argVal2
+                return $ BinaryHelperExpr funcId argExpr1 argExpr2
+            _ -> trace ("Bad funcArgs: " ++ (show funcArgs)) Nothing
+        | otherwise -> Nothing
+    _ -> Nothing
+helperInstToExpr _ _ = Nothing
 
 traceInst :: Instruction -> a -> a
 traceInst inst = trace ("Couldn't process inst " ++ (show inst))
@@ -147,10 +173,18 @@ maybeTraceInst inst = traceInst inst
 (<|||>) :: Alternative f => (a -> b -> f c) -> (a -> b -> f c) -> a -> b -> f c
 (<|||>) f1 f2 a b = f1 a b <|> f2 a b
 
+-- List of ways to process instructions and order in which to try them.
+instToExprs :: [Info -> Instruction -> Maybe Expr]
+instToExprs = [ binaryInstToExpr,
+                castInstToExpr,
+                loadInstToExpr,
+                gepInstToExpr,
+                helperInstToExpr ]
+
 updateInfo :: Info -> Instruction -> Info
 updateInfo info inst = fromMaybe (maybeTraceInst inst info) $ do
     id <- instructionName inst
-    expr <- (binaryInstToExpr <|||> castInstToExpr <|||> loadInstToExpr) info inst
+    expr <- (foldl1 (<|||>) instToExprs) info inst
     return $ M.insert (IdLoc id) expr info
 
 runBlock :: Info -> BasicBlock -> Info

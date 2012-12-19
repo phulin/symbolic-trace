@@ -114,6 +114,19 @@ loadInstToExpr info inst@LoadInst{ loadAddress = addr } = do
     return $ LoadExpr addrExpr
 loadInstToExpr _ _ = Nothing
 
+gepInstToExpr :: Info -> Instruction -> Maybe Expr
+gepInstToExpr info inst@GetElementPtrInst{ _instructionType = instType,
+                                           getElementPtrValue = value,
+                                           getElementPtrIndices = indices } = do
+    valueExpr <- valueToExpr info $ trace ("Value: " ++ show value) value
+    size <- case instType of
+        TypePointer (TypeInteger bits) _ -> Just $ bits `quot` 8
+        other -> trace ("Type failure: " ++ show other) Nothing
+    index <- case map valueContent indices of
+        [ConstantC (ConstantInt{ constantIntValue = idx })] -> Just idx
+        other -> trace ("Value failure: " ++ show other) Nothing
+    return $ IntToPtrExpr $ AddExpr valueExpr (ILitExpr $ fromIntegral size * index)
+
 traceInst :: Instruction -> a -> a
 traceInst inst = trace ("Couldn't process inst " ++ (show inst))
 
@@ -137,7 +150,7 @@ maybeTraceInst inst = traceInst inst
 updateInfo :: Info -> Instruction -> Info
 updateInfo info inst = fromMaybe (maybeTraceInst inst info) $ do
     id <- instructionName inst
-    expr <- (binaryInstToExpr info inst) <|> (castInstToExpr info inst) <|> (loadInstToExpr info inst)
+    expr <- (binaryInstToExpr <|||> castInstToExpr <|||> loadInstToExpr) info inst
     return $ M.insert (IdLoc id) expr info
 
 runBlock :: Info -> BasicBlock -> Info

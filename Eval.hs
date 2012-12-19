@@ -11,6 +11,9 @@ import Data.Word
 import Control.Applicative
 import Data.Maybe
 import Debug.Trace
+import Text.Parsec(Parsec, endBy, string)
+import Text.Parsec.String(parseFromFile)
+import Text.Parsec.Extra(integer, eol)
 
 type Addr = Word64
 type UInt = Word64
@@ -201,9 +204,25 @@ showInfo :: Info -> String
 showInfo = unlines . map showEach . M.toList
     where showEach (key, val) = show key ++ " -> " ++ show val
 
+data MemlogOp = LoadOp Integer | StoreOp Integer | CondBranchOp Integer
+    deriving (Eq, Ord, Show)
+
+type MemlogParser a = Parsec String () a
+memlogP :: MemlogParser [MemlogOp]
+memlogP = endBy (opP <* string " " <*> integer) eol
+opP :: MemlogParser (Integer -> MemlogOp)
+opP = (string "load" *> return LoadOp) <|>
+      (string "store" *> return StoreOp) <|>
+      (string "condbranch" *> return CondBranchOp)
+
 main :: IO ()
 main = do
     (Right theMod) <- parseLLVMFile defaultParserOptions "/tmp/llvm-mod.bc"
-    let func = fromMaybe (error "Couldn't find function") $ findFunctionByName theMod "tcg-llvm-tb-1229-4004a0-main"
-    let basicBlock = head $ functionBody $ func
+    funcNameList <- lines <$> readFile "/tmp/llvm-functions.log"
+    let findFunc name = fromMaybe (error $ "Couldn't find function " ++ name) $ findFunctionByName theMod name
+    let funcList = map findFunc funcNameList
+    let blockList = concatMap functionBody funcList
+    let instList = concatMap basicBlockInstructions blockList
+    (Right memlog) <- parseFromFile memlogP "/tmp/llvm-memlog.log"
+    let basicBlock = head $ functionBody $ findFunc "tcg-llvm-tb-1229-4004a0-main"
     putStrLn $ showInfo $ runBlock noInfo basicBlock

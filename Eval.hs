@@ -14,6 +14,9 @@ import Debug.Trace
 import Text.Parsec(Parsec, endBy, string)
 import Text.Parsec.String(parseFromFile)
 import Text.Parsec.Extra(integer, eol)
+import Control.Monad
+import Control.Monad.State.Lazy
+import Control.Monad.Trans.Class(lift)
 
 type Addr = Word64
 type UInt = Word64
@@ -214,6 +217,36 @@ opP :: MemlogParser (Integer -> MemlogOp)
 opP = (string "load" *> return LoadOp) <|>
       (string "store" *> return StoreOp) <|>
       (string "condbranch" *> return CondBranchOp)
+
+type MemlogMap = M.Map BasicBlock [(Instruction, Maybe MemlogOp)]
+type OpContext = State [MemlogOp]
+type MemlogContext = StateT MemlogMap OpContext
+memlogPop :: OpContext MemlogOp
+memlogPop = do
+    top : stream <- get
+    put stream
+    return top
+
+associateMemlogWithFuncs :: [Function] -> MemlogContext ()
+associateMemlogWithFuncs (func : funcs) = do
+    mapM addBlock $ functionBody func
+    associateMemlogWithFuncs funcs
+    where addBlock :: BasicBlock -> MemlogContext ()
+          addBlock block = do
+              associated <- lift $ associateBasicBlock block
+              modify $ M.insert block associated
+
+associateBasicBlock :: BasicBlock -> OpContext [(Instruction, Maybe MemlogOp)]
+associateBasicBlock = mapM associateInstWithCopy . basicBlockInstructions
+    where associateInstWithCopy inst = do
+              maybeOp <- associateInst inst
+              return (inst, maybeOp)
+
+associateInst :: Instruction -> OpContext (Maybe MemlogOp)
+associateInst = undefined
+
+associateFuncs :: [MemlogOp] -> [Function] -> MemlogMap
+associateFuncs ops funcs = evalState (execStateT (associateMemlogWithFuncs funcs) M.empty) ops
 
 main :: IO ()
 main = do

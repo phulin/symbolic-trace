@@ -6,14 +6,16 @@ import Data.LLVM.Types
 import LLVM.Parse
 import qualified Data.List as L
 import qualified Data.Map as M
-import qualified Data.Bits as B
+import qualified Data.Bits as Bits
 import Data.Word
 import Control.Applicative
 import Data.Maybe
 import Debug.Trace
-import Text.Parsec(Parsec, endBy, string)
-import Text.Parsec.String(parseFromFile)
-import Text.Parsec.Extra(integer, eol)
+-- import Text.Parsec(Parsec, endBy, string)
+-- import Text.Parsec.String(parseFromFile)
+-- import Text.Parsec.Extra(integer, eol)
+import Data.Binary.Get(Get, runGet, getWord32host, getWord64host, skip)
+import qualified Data.ByteString.Lazy as B
 import Control.Monad
 import Control.Monad.State.Lazy
 import Control.Monad.Trans.Class(lift)
@@ -207,55 +209,136 @@ showInfo :: Info -> String
 showInfo = unlines . map showEach . M.toList
     where showEach (key, val) = show key ++ " -> " ++ show val
 
-data MemlogOp = LoadOp Integer | StoreOp Integer | CondBranchOp Integer
+-- data MemlogOp = LoadOp Integer | StoreOp Integer | CondBranchOp Integer
+--     deriving (Eq, Ord, Show)
+
+data MemlogOp = AddrMemlogOp AddrOp AddrEntry | BranchOp Bool | SelectOp Bool
+    deriving (Eq, Ord, Show)
+data AddrOp = LoadOp | StoreOp | BranchAddrOp | SelectAddrOp
+    deriving (Eq, Ord, Show, Enum)
+data AddrEntry = AddrEntry { addrType :: AddrEntryType
+                           , addrVal :: Word64
+                           , addrOff :: Word32
+                           , addrFlag :: AddrFlag }
+    deriving (Eq, Ord, Show)
+data AddrEntryType = HAddr | MAddr | IAddr | LAddr | GReg | GSpec | Unk | Const | Ret
+    deriving (Eq, Ord, Show, Enum)
+data AddrFlag = IrrelevantFlag | NoFlag | ExceptionFlag | ReadlogFlag | FuncargFlag
     deriving (Eq, Ord, Show)
 
-type MemlogParser a = Parsec String () a
-memlogP :: MemlogParser [MemlogOp]
-memlogP = endBy (opP <* string " " <*> integer) eol
-opP :: MemlogParser (Integer -> MemlogOp)
-opP = (string "load" *> return LoadOp) <|>
-      (string "store" *> return StoreOp) <|>
-      (string "condbranch" *> return CondBranchOp)
+getMemlogEntry :: Get MemlogOp
+getMemlogEntry = do
+    entryType <- getWord64host
+    out <- case entryType of
+        0 -> AddrMemlogOp <$> getAddrOp <*> getAddrEntry
+        1 -> BranchOp <$> getBool <* skip 28
+        2 -> SelectOp <$> getBool <* skip 28
+    -- traceShow out $ return out
+    return out
+
+getBool :: Get Bool
+getBool = do
+    word32 <- getWord32host
+    return $ case word32 of
+        0 -> False
+        _ -> True
+
+getAddrOp :: Get AddrOp
+getAddrOp = (toEnum . fromIntegral) <$> getWord64host
+
+getAddrEntry :: Get AddrEntry
+getAddrEntry = AddrEntry <$> ((toEnum . fromIntegral) <$> getWord64host) <*> getWord64host <*> getWord32host <*> getAddrFlag
+
+getAddrFlag :: Get AddrFlag
+getAddrFlag = do
+    addrFlagType <- getWord32host
+    return $ case addrFlagType of
+        -1 -> IrrelevantFlag
+        0 -> NoFlag
+        1 -> ExceptionFlag
+        2 -> ReadlogFlag
+        3 -> FuncargFlag
+        f -> error ("Parse error on flag " ++ show f)
+
+-- memlogP :: Parser [MemlogOp]
+-- memlogP = endBy (opP <* string " " <*> integer) eol
+-- opP :: Parser (Integer -> MemlogOp)
+-- opP = (string "load" *> return LoadOp) <|>
+--       (string "store" *> return StoreOp) <|>
+--       (string "condbranch" *> return CondBranchOp)
 
 type MemlogMap = M.Map BasicBlock [(Instruction, Maybe MemlogOp)]
 type OpContext = State [MemlogOp]
-type MemlogContext = StateT MemlogMap OpContext
-memlogPop :: OpContext MemlogOp
+type MemlogContext = StateT (MemlogMap, String) OpContext
+-- Track next basic block to execute
+type FuncOpContext = StateT (Maybe BasicBlock) OpContext
+memlogPop :: FuncOpContext (Maybe MemlogOp)
 memlogPop = do
-    top : stream <- get
-    put stream
-    return top
+    stream <- lift get
+    case stream of
+        op : ops -> lift (put ops) >> return (Just op)
+        [] -> return Nothing
 
-associateMemlogWithFuncs :: [Function] -> MemlogContext ()
-associateMemlogWithFuncs (func : funcs) = do
-    mapM addBlock $ functionBody func
-    associateMemlogWithFuncs funcs
+memlogPopWithError :: String -> FuncOpContext MemlogOp
+memlogPopWithError errMsg = do
+    maybeOp <- memlogPop
+    case maybeOp of
+        Just op -> return op
+        Nothing -> error errMsg
+
+associateMemlogWithFunc :: Function -> MemlogContext ()
+associateMemlogWithFunc func = addBlock $ head $ functionBody func
     where addBlock :: BasicBlock -> MemlogContext ()
           addBlock block = do
-              associated <- lift $ associateBasicBlock block
-              modify $ M.insert block associated
+              ops <- lift get
+              (associated, nextBlock) <- lift $ runStateT (associateBasicBlock block) Nothing
+              (map, funcName) <- get
+              if funcName == (identifierAsString $ functionName func)
+                  then put (M.insert block associated map, funcName)
+                  else return ()
+              case nextBlock of
+                  Just nextBlock' -> addBlock nextBlock'
+                  Nothing -> return ()
 
-associateBasicBlock :: BasicBlock -> OpContext [(Instruction, Maybe MemlogOp)]
+associateBasicBlock :: BasicBlock -> FuncOpContext [(Instruction, Maybe MemlogOp)]
 associateBasicBlock = mapM associateInstWithCopy . basicBlockInstructions
     where associateInstWithCopy inst = do
               maybeOp <- associateInst inst
               return (inst, maybeOp)
 
-associateInst :: Instruction -> OpContext (Maybe MemlogOp)
-associateInst = undefined
+associateInst :: Instruction -> FuncOpContext (Maybe MemlogOp)
+associateInst inst@LoadInst{} = liftM Just (memlogPopWithError $ "Failed on block " ++ (show $ instructionBasicBlock inst))
+associateInst inst@StoreInst{ storeIsVolatile = volatile }
+    = if volatile
+        then return Nothing
+        else liftM Just (memlogPopWithError $ "Failed on block " ++ (show $ instructionBasicBlock inst))
+associateInst inst@BranchInst{} = do
+    op <- memlogPopWithError $ "Failed on block " ++ (show $ instructionBasicBlock inst)
+    case op of
+        BranchOp branchTaken ->
+            if branchTaken
+                then put $ Just $ branchTrueTarget inst
+                else put $ Just $ branchFalseTarget inst
+        _ -> return ()
+    return $ Just op
+associateInst RetInst{} = put Nothing >> return Nothing
+associateInst _ = return Nothing
 
-associateFuncs :: [MemlogOp] -> [Function] -> MemlogMap
-associateFuncs ops funcs = evalState (execStateT (associateMemlogWithFuncs funcs) M.empty) ops
+associateFuncs :: [MemlogOp] -> String -> [Function] -> MemlogMap
+associateFuncs ops funcName funcs = map
+    where ((map, _), leftoverOps) = runState inner ops
+          inner = execStateT (mapM_ associateMemlogWithFunc funcs) (M.empty, funcName)
 
 main :: IO ()
 main = do
+    let mainName = "tcg-llvm-tb-1243-400460-main"
     (Right theMod) <- parseLLVMFile defaultParserOptions "/tmp/llvm-mod.bc"
     funcNameList <- lines <$> readFile "/tmp/llvm-functions.log"
     let findFunc name = fromMaybe (error $ "Couldn't find function " ++ name) $ findFunctionByName theMod name
     let funcList = map findFunc funcNameList
     let blockList = concatMap functionBody funcList
     let instList = concatMap basicBlockInstructions blockList
-    (Right memlog) <- parseFromFile memlogP "/tmp/llvm-memlog.log"
-    let basicBlock = head $ functionBody $ findFunc "tcg-llvm-tb-1229-4004a0-main"
+    memlogBytes <- B.readFile "/tmp/llvm-memlog.log"
+    let memlog = runGet (many getMemlogEntry) memlogBytes
+    let basicBlock = seq (t $ associateFuncs memlog mainName funcList) $ head $ functionBody $ findFunc mainName
     putStrLn $ showInfo $ runBlock noInfo basicBlock

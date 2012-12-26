@@ -280,6 +280,9 @@ memlogPopWithError errMsg = do
         Just op -> return op
         Nothing -> error errMsg
 
+memlogPopWithErrorInst :: Instruction -> FuncOpContext MemlogOp
+memlogPopWithErrorInst inst = memlogPopWithError $ "Failed on block " ++ (show $ instructionBasicBlock inst)
+
 associateMemlogWithFunc :: Function -> MemlogContext ()
 associateMemlogWithFunc func = addBlock $ head $ functionBody func
     where addBlock :: BasicBlock -> MemlogContext ()
@@ -304,13 +307,13 @@ associateBasicBlock = mapM associateInstWithCopy . basicBlockInstructions
               return (inst, maybeOp)
 
 associateInst :: Instruction -> FuncOpContext (Maybe MemlogOp)
-associateInst inst@LoadInst{} = liftM Just (memlogPopWithError $ "Failed on block " ++ (show $ instructionBasicBlock inst))
+associateInst inst@LoadInst{} = liftM Just $ memlogPopWithErrorInst inst
 associateInst inst@StoreInst{ storeIsVolatile = volatile }
     = if volatile
         then return Nothing
-        else liftM Just (memlogPopWithError $ "Failed on block " ++ (show $ instructionBasicBlock inst))
+        else liftM Just $ memlogPopWithErrorInst inst
 associateInst inst@BranchInst{} = do
-    op <- memlogPopWithError $ "Failed on block " ++ (show $ instructionBasicBlock inst)
+    op <- memlogPopWithErrorInst inst
     case op of
         BranchOp branchTaken ->
             if branchTaken == 0
@@ -320,7 +323,7 @@ associateInst inst@BranchInst{} = do
     return $ Just op
 associateInst inst@UnconditionalBranchInst{ unconditionalBranchTarget = target} = do
     put $ Just target
-    Just <$> (memlogPopWithError $ "Failed on block " ++ (show $ instructionBasicBlock inst))
+    liftM Just $ memlogPopWithErrorInst inst
 
 associateInst RetInst{} = put Nothing >> return Nothing
 associateInst _ = return Nothing
@@ -342,8 +345,6 @@ main = do
     funcNameList <- lines <$> readFile "/tmp/llvm-functions.log"
     let findFunc name = fromMaybe (error $ "Couldn't find function " ++ name) $ findFunctionByName theMod name
     let funcList = map findFunc funcNameList
-    let blockList = concatMap functionBody funcList
-    let instList = concatMap basicBlockInstructions blockList
     memlogBytes <- B.readFile "/tmp/llvm-memlog.log"
     let memlog = runGet (many getMemlogEntry) memlogBytes
     let associated = associateFuncs memlog mainName funcList

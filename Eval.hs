@@ -124,11 +124,16 @@ castInstToExpr info inst = do
     value <- valueToExpr info $ castedValue inst
     return $ exprConstructor value
 
-loadInstToExpr :: Info -> Instruction -> Maybe Expr
-loadInstToExpr info inst@LoadInst{ loadAddress = addr } = do
+loadInstToExpr :: Info -> (Instruction, Maybe MemlogOp) -> Maybe Expr
+loadInstToExpr info (inst@LoadInst{ loadAddress = addr }, _) = do
     addrExpr <- valueToExpr info addr
     return $ LoadExpr addrExpr
 loadInstToExpr _ _ = Nothing
+
+storeInstToExpr :: Info -> (Instruction, Maybe MemlogOp) -> Maybe Expr
+storeInstToExpr info (inst@StoreInst{}, Just (AddrMemlogOp StoreOp addr)) = do
+    Nothing
+storeInstToExpr _ _ = Nothing
 
 gepInstToExpr :: Info -> Instruction -> Maybe Expr
 gepInstToExpr info inst@GetElementPtrInst{ _instructionType = instType,
@@ -185,19 +190,23 @@ maybeTraceInst inst = traceInst inst
 instToExprs :: [Info -> Instruction -> Maybe Expr]
 instToExprs = [ binaryInstToExpr,
                 castInstToExpr,
-                loadInstToExpr,
                 gepInstToExpr,
                 helperInstToExpr ]
 
-updateInfo :: Info -> Instruction -> Info
-updateInfo info inst = fromMaybe (maybeTraceInst inst info) $ do
+memInstToExprs :: [Info -> (Instruction, Maybe MemlogOp) -> Maybe Expr]
+memInstToExprs = [ loadInstToExpr, storeInstToExpr ]
+
+updateInfo :: Info -> (Instruction, Maybe MemlogOp) -> Info
+updateInfo info instOp@(inst, _) = fromMaybe (maybeTraceInst inst info) $ do
     id <- instructionName inst
-    expr <- (foldl1 (<|||>) instToExprs) info inst
+    expr <- (foldl1 (<|||>) instToExprs) info inst <|>
+            (foldl1 (<|||>) memInstToExprs) info instOp
     -- traceShow (id, expr) $ return ()
     return $ M.insert (IdLoc id) expr info
 
-runBlock :: Info -> BasicBlock -> Info
-runBlock info block = foldl updateInfo info $ basicBlockInstructions block
+runBlock :: Info -> MemlogMap -> BasicBlock -> Info
+runBlock info memlogMap block = foldl updateInfo info instOpList
+    where instOpList = M.findWithDefault (error "Couldn't find basic block instruction list") block memlogMap
 
 deriving instance Show Constant
 deriving instance Show ExternalValue
@@ -350,4 +359,4 @@ main = do
     let associated = associateFuncs memlog mainName funcList
     putStrLn $ showAssociated associated
     let basicBlock = seq (associateFuncs memlog mainName funcList) $ head $ functionBody $ findFunc mainName
-    putStrLn $ showInfo $ runBlock noInfo basicBlock
+    putStrLn $ showInfo $ runBlock noInfo associated basicBlock

@@ -193,6 +193,7 @@ updateInfo :: Info -> Instruction -> Info
 updateInfo info inst = fromMaybe (maybeTraceInst inst info) $ do
     id <- instructionName inst
     expr <- (foldl1 (<|||>) instToExprs) info inst
+    -- traceShow (id, expr) $ return ()
     return $ M.insert (IdLoc id) expr info
 
 runBlock :: Info -> BasicBlock -> Info
@@ -212,7 +213,7 @@ showInfo = unlines . map showEach . M.toList
 -- data MemlogOp = LoadOp Integer | StoreOp Integer | CondBranchOp Integer
 --     deriving (Eq, Ord, Show)
 
-data MemlogOp = AddrMemlogOp AddrOp AddrEntry | BranchOp Bool | SelectOp Bool
+data MemlogOp = AddrMemlogOp AddrOp AddrEntry | BranchOp Word32 | SelectOp Bool
     deriving (Eq, Ord, Show)
 data AddrOp = LoadOp | StoreOp | BranchAddrOp | SelectAddrOp
     deriving (Eq, Ord, Show, Enum)
@@ -231,7 +232,7 @@ getMemlogEntry = do
     entryType <- getWord64host
     out <- case entryType of
         0 -> AddrMemlogOp <$> getAddrOp <*> getAddrEntry
-        1 -> BranchOp <$> getBool <* skip 28
+        1 -> BranchOp <$> getWord32host <* skip 28
         2 -> SelectOp <$> getBool <* skip 28
     -- traceShow out $ return out
     return out
@@ -259,13 +260,6 @@ getAddrFlag = do
         2 -> ReadlogFlag
         3 -> FuncargFlag
         f -> error ("Parse error on flag " ++ show f)
-
--- memlogP :: Parser [MemlogOp]
--- memlogP = endBy (opP <* string " " <*> integer) eol
--- opP :: Parser (Integer -> MemlogOp)
--- opP = (string "load" *> return LoadOp) <|>
---       (string "store" *> return StoreOp) <|>
---       (string "condbranch" *> return CondBranchOp)
 
 type MemlogMap = M.Map BasicBlock [(Instruction, Maybe MemlogOp)]
 type OpContext = State [MemlogOp]
@@ -304,6 +298,9 @@ associateBasicBlock :: BasicBlock -> FuncOpContext [(Instruction, Maybe MemlogOp
 associateBasicBlock = mapM associateInstWithCopy . basicBlockInstructions
     where associateInstWithCopy inst = do
               maybeOp <- associateInst inst
+              -- case maybeOp of
+              --   Just _ -> trace (show (identifierAsString $ functionName $ basicBlockFunction $ fromJust $ instructionBasicBlock inst) ++ ": " ++ show inst ++ "=> " ++  show maybeOp) $ return ()
+              --   _ -> return ()
               return (inst, maybeOp)
 
 associateInst :: Instruction -> FuncOpContext (Maybe MemlogOp)
@@ -316,11 +313,15 @@ associateInst inst@BranchInst{} = do
     op <- memlogPopWithError $ "Failed on block " ++ (show $ instructionBasicBlock inst)
     case op of
         BranchOp branchTaken ->
-            if branchTaken
+            if branchTaken == 0
                 then put $ Just $ branchTrueTarget inst
                 else put $ Just $ branchFalseTarget inst
         _ -> return ()
     return $ Just op
+associateInst inst@UnconditionalBranchInst{ unconditionalBranchTarget = target} = do
+    put $ Just target
+    Just <$> (memlogPopWithError $ "Failed on block " ++ (show $ instructionBasicBlock inst))
+
 associateInst RetInst{} = put Nothing >> return Nothing
 associateInst _ = return Nothing
 
@@ -328,6 +329,11 @@ associateFuncs :: [MemlogOp] -> String -> [Function] -> MemlogMap
 associateFuncs ops funcName funcs = map
     where ((map, _), leftoverOps) = runState inner ops
           inner = execStateT (mapM_ associateMemlogWithFunc funcs) (M.empty, funcName)
+
+showAssociated :: MemlogMap -> String
+showAssociated theMap = L.intercalate "\n\n" $ map showBlock $ M.toList theMap
+    where showBlock (block, list) = show (basicBlockName block) ++ ":\n" ++ (L.intercalate "\n" $ map showInstOp list)
+          showInstOp (inst, maybeOp) = show inst ++ " => " ++ show maybeOp
 
 main :: IO ()
 main = do
@@ -340,5 +346,7 @@ main = do
     let instList = concatMap basicBlockInstructions blockList
     memlogBytes <- B.readFile "/tmp/llvm-memlog.log"
     let memlog = runGet (many getMemlogEntry) memlogBytes
-    let basicBlock = seq (t $ associateFuncs memlog mainName funcList) $ head $ functionBody $ findFunc mainName
+    let associated = associateFuncs memlog mainName funcList
+    putStrLn $ showAssociated associated
+    let basicBlock = seq (associateFuncs memlog mainName funcList) $ head $ functionBody $ findFunc mainName
     putStrLn $ showInfo $ runBlock noInfo basicBlock

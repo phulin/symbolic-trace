@@ -81,7 +81,7 @@ instance Show Expr where
     show (PtrToIntExpr e) = printf "PtrToInt(%s)" (show e)
     show (IntToPtrExpr e) = printf "IntToPtr(%s)" (show e)
     show (BitcastExpr e) = printf "Bitcast(%s)" (show e)
-    show (LoadExpr addr) = printf "*%s" (show addr)
+    show (LoadExpr e) = printf "*%s" (show e)
     show (BinaryHelperExpr id e1 e2) = printf "%s(%s, %s)" (show id) (show e1) (show e2)
     show (CastHelperExpr id e) = printf "%s(%s)" (show id) (show e)
     show (ILitExpr i) = show i
@@ -89,7 +89,37 @@ instance Show Expr where
     show (InputExpr loc) = printf "Free(%s)" (show loc)
 
 simplify :: Expr -> Expr
-simplify = id
+simplify (AddExpr e1 (ILitExpr 0)) = simplify e1
+simplify (AddExpr (ILitExpr 0) e2) = simplify e2
+simplify (AddExpr e1 e2) = AddExpr (simplify e1) (simplify e2)
+simplify (SubExpr e1 e2) = SubExpr (simplify e1) (simplify e2)
+simplify (MulExpr e1 e2) = MulExpr (simplify e1) (simplify e2)
+simplify (DivExpr e1 e2) = DivExpr (simplify e1) (simplify e2)
+simplify (RemExpr e1 e2) = RemExpr (simplify e1) (simplify e2)
+simplify (ShlExpr e1 e2) = ShlExpr (simplify e1) (simplify e2)
+simplify (LshrExpr e1 e2) = LshrExpr (simplify e1) (simplify e2)
+simplify (AshrExpr e1 e2) = AshrExpr (simplify e1) (simplify e2)
+simplify (AndExpr e1 e2) = AndExpr (simplify e1) (simplify e2)
+simplify (OrExpr e1 e2) = OrExpr (simplify e1) (simplify e2)
+simplify (XorExpr e1 e2) = XorExpr (simplify e1) (simplify e2)
+simplify (TruncExpr (ZExtExpr e)) = simplify e
+simplify (TruncExpr (SExtExpr e)) = simplify e
+simplify (TruncExpr e) = TruncExpr (simplify e)
+simplify (ZExtExpr e) = ZExtExpr (simplify e)
+simplify (SExtExpr e) = SExtExpr (simplify e)
+simplify (FPTruncExpr e) = FPTruncExpr (simplify e)
+simplify (FPExtExpr e) = FPExtExpr (simplify e)
+simplify (FPToSIExpr e) = FPToSIExpr (simplify e)
+simplify (FPToUIExpr e) = FPToUIExpr (simplify e)
+simplify (SIToFPExpr e) = SIToFPExpr (simplify e)
+simplify (UIToFPExpr e) = UIToFPExpr (simplify e)
+simplify (PtrToIntExpr e) = PtrToIntExpr (simplify e)
+simplify (IntToPtrExpr e) = IntToPtrExpr (simplify e)
+simplify (BitcastExpr e) = BitcastExpr (simplify e)
+simplify (LoadExpr e) = LoadExpr (simplify e)
+simplify (BinaryHelperExpr id e1 e2) = BinaryHelperExpr id (simplify e1) (simplify e2)
+simplify (CastHelperExpr id e) = CastHelperExpr id (simplify e)
+simplify e = e
 
 -- Representation of our [partial] knowledge of machine state.
 type Info = M.Map Loc Expr

@@ -20,10 +20,9 @@ import Control.Monad
 import Control.Monad.State.Lazy
 import Control.Monad.Trans.Class(lift)
 
-type Addr = Word64
 type UInt = Word64
 
-data Loc = IdLoc Identifier | MemLoc Addr
+data Loc = IdLoc Identifier | MemLoc AddrEntry
     deriving (Eq, Ord, Show)
 data Expr =
     AddExpr Expr Expr |
@@ -124,16 +123,13 @@ castInstToExpr info inst = do
     value <- valueToExpr info $ castedValue inst
     return $ exprConstructor value
 
+-- TODO: clean up
 loadInstToExpr :: Info -> (Instruction, Maybe MemlogOp) -> Maybe Expr
-loadInstToExpr info (inst@LoadInst{ loadAddress = addr }, _) = do
-    addrExpr <- valueToExpr info addr
-    return $ LoadExpr addrExpr
+loadInstToExpr info (inst@LoadInst{ loadAddress = addr },
+                     Just (AddrMemlogOp LoadOp addrEntry)) = do
+    -- trace ("LOAD: " ++ show inst ++ " ===> " ++ show addrEntry) $ return ()
+    M.lookup (MemLoc addrEntry) info <|> liftM LoadExpr (valueToExpr info addr)
 loadInstToExpr _ _ = Nothing
-
-storeInstToExpr :: Info -> (Instruction, Maybe MemlogOp) -> Maybe Expr
-storeInstToExpr info (inst@StoreInst{}, Just (AddrMemlogOp StoreOp addr)) = do
-    Nothing
-storeInstToExpr _ _ = Nothing
 
 gepInstToExpr :: Info -> Instruction -> Maybe Expr
 gepInstToExpr info inst@GetElementPtrInst{ _instructionType = instType,
@@ -175,9 +171,10 @@ t x = traceShow x x
 maybeTraceInst :: Instruction -> a -> a
 maybeTraceInst inst@CallInst{} = case valueContent $ callFunction inst of
     ExternalFunctionC func
-        | (identifierAsString $ externalFunctionName func) == "printdynval" -> id
+        | (identifierAsString $ externalFunctionName func) == "log_dynval" -> id
         | otherwise -> traceInst inst
     _ -> traceInst inst
+maybeTraceInst inst@StoreInst{ storeIsVolatile = True } = id
 maybeTraceInst inst = traceInst inst
 
 (<||>) :: Alternative f => (a -> f b) -> (a -> f b) -> a -> f b
@@ -194,15 +191,37 @@ instToExprs = [ binaryInstToExpr,
                 helperInstToExpr ]
 
 memInstToExprs :: [Info -> (Instruction, Maybe MemlogOp) -> Maybe Expr]
-memInstToExprs = [ loadInstToExpr, storeInstToExpr ]
+memInstToExprs = [ loadInstToExpr ]
 
-updateInfo :: Info -> (Instruction, Maybe MemlogOp) -> Info
-updateInfo info instOp@(inst, _) = fromMaybe (maybeTraceInst inst info) $ do
+storeUpdate :: Info -> (Instruction, Maybe MemlogOp) -> Maybe Info
+storeUpdate info (inst@StoreInst{ storeIsVolatile = False,
+                                  storeValue = val },
+                  Just (AddrMemlogOp StoreOp addr)) = do
+    trace ("STORE: " ++ show inst ++ " ===> " ++ show addr) $ return ()
+    value <- valueToExpr info val
+    return $ M.insert (MemLoc addr) value info
+storeUpdate _ _ = Nothing
+
+exprUpdate :: Info -> (Instruction, Maybe MemlogOp) -> Maybe Info
+exprUpdate info instOp@(inst, _) = do
     id <- instructionName inst
     expr <- (foldl1 (<|||>) instToExprs) info inst <|>
-            (foldl1 (<|||>) memInstToExprs) info instOp
+            loadInstToExpr info instOp
     -- traceShow (id, expr) $ return ()
     return $ M.insert (IdLoc id) expr info
+
+-- Ignore alloca and ret instructions
+nullUpdate :: Info -> (Instruction, Maybe MemlogOp) -> Maybe Info
+nullUpdate info (AllocaInst{}, _) = Just info
+nullUpdate info (RetInst{}, _) = Just info
+nullUpdate _ _ = Nothing
+
+infoUpdaters :: [Info -> (Instruction, Maybe MemlogOp) -> Maybe Info]
+infoUpdaters = [ exprUpdate, storeUpdate, nullUpdate ]
+
+updateInfo :: Info -> (Instruction, Maybe MemlogOp) -> Info
+updateInfo info instOp@(inst, _)
+    = fromMaybe (maybeTraceInst inst info) (foldl1 (<|||>) infoUpdaters info instOp)
 
 runBlock :: Info -> MemlogMap -> BasicBlock -> Info
 runBlock info memlogMap block = foldl updateInfo info instOpList
@@ -357,6 +376,6 @@ main = do
     memlogBytes <- B.readFile "/tmp/llvm-memlog.log"
     let memlog = runGet (many getMemlogEntry) memlogBytes
     let associated = associateFuncs memlog mainName funcList
-    putStrLn $ showAssociated associated
+    -- putStrLn $ showAssociated associated
     let basicBlock = seq (associateFuncs memlog mainName funcList) $ head $ functionBody $ findFunc mainName
     putStrLn $ showInfo $ runBlock noInfo associated basicBlock

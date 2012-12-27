@@ -25,101 +25,130 @@ type UInt = Word64
 
 data Loc = IdLoc Identifier | MemLoc AddrEntry
     deriving (Eq, Ord, Show)
+data ExprT = VoidT | PtrT | Int8T | Int32T | Int64T | FloatT | DoubleT
+    deriving (Eq, Ord, Show)
 data Expr =
-    AddExpr Expr Expr |
-    SubExpr Expr Expr |
-    MulExpr Expr Expr |
-    DivExpr Expr Expr |
-    RemExpr Expr Expr |
-    ShlExpr Expr Expr |
-    LshrExpr Expr Expr |
-    AshrExpr Expr Expr |
-    AndExpr Expr Expr |
-    OrExpr Expr Expr |
-    XorExpr Expr Expr |
-    TruncExpr Expr |
-    ZExtExpr Expr |
-    SExtExpr Expr |
-    FPTruncExpr Expr |
-    FPExtExpr Expr |
-    FPToSIExpr Expr |
-    FPToUIExpr Expr |
-    SIToFPExpr Expr |
-    UIToFPExpr Expr |
-    PtrToIntExpr Expr |
-    IntToPtrExpr Expr |
-    BitcastExpr Expr |
-    LoadExpr Expr |
-    BinaryHelperExpr Identifier Expr Expr |
-    CastHelperExpr Identifier Expr |
-    ILitExpr Integer |
-    FLitExpr Double |
-    InputExpr Loc
+    AddExpr ExprT Expr Expr |
+    SubExpr ExprT Expr Expr |
+    MulExpr ExprT Expr Expr |
+    DivExpr ExprT Expr Expr |
+    RemExpr ExprT Expr Expr |
+    ShlExpr ExprT Expr Expr |
+    LshrExpr ExprT Expr Expr |
+    AshrExpr ExprT Expr Expr |
+    AndExpr ExprT Expr Expr |
+    OrExpr ExprT Expr Expr |
+    XorExpr ExprT Expr Expr |
+    TruncExpr ExprT Expr |
+    ZExtExpr ExprT Expr |
+    SExtExpr ExprT Expr |
+    FPTruncExpr ExprT Expr |
+    FPExtExpr ExprT Expr |
+    FPToSIExpr ExprT Expr |
+    FPToUIExpr ExprT Expr |
+    SIToFPExpr ExprT Expr |
+    UIToFPExpr ExprT Expr |
+    PtrToIntExpr ExprT Expr |
+    IntToPtrExpr ExprT Expr |
+    BitcastExpr ExprT Expr |
+    LoadExpr ExprT Expr |
+    BinaryHelperExpr ExprT Identifier Expr Expr | -- not witnessed
+    CastHelperExpr ExprT Identifier Expr |
+    ILitExpr Integer | -- takes any integer type
+    FLitExpr Double | -- takes any float type
+    InputExpr ExprT Loc
     deriving (Eq, Ord)
 
 instance Show Expr where
-    show (AddExpr e1 e2) = printf "(%s + %s)" (show e1) (show e2)
-    show (SubExpr e1 e2) = printf "(%s - %s)" (show e1) (show e2)
-    show (MulExpr e1 e2) = printf "(%s * %s)" (show e1) (show e2)
-    show (DivExpr e1 e2) = printf "(%s / %s)" (show e1) (show e2)
-    show (RemExpr e1 e2) = printf "(%s % %s)" (show e1) (show e2)
-    show (ShlExpr e1 e2) = printf "(%s << %s)" (show e1) (show e2)
-    show (LshrExpr e1 e2) = printf "(%s L>> %s)" (show e1) (show e2)
-    show (AshrExpr e1 e2) = printf "(%s A>> %s)" (show e1) (show e2)
-    show (AndExpr e1 e2) = printf "(%s & %s)" (show e1) (show e2)
-    show (OrExpr e1 e2) = printf "(%s | %s)" (show e1) (show e2)
-    show (XorExpr e1 e2) = printf "(%s ^ %s)" (show e1) (show e2)
-    show (TruncExpr e) = printf "Trunc(%s)" (show e)
-    show (ZExtExpr e) = printf "ZExt(%s)" (show e)
-    show (SExtExpr e) = printf "SExt(%s)" (show e)
-    show (FPTruncExpr e) = printf "FPTrunc(%s)" (show e)
-    show (FPExtExpr e) = printf "FPExt(%s)" (show e)
-    show (FPToSIExpr e) = printf "FPToSI(%s)" (show e)
-    show (FPToUIExpr e) = printf "FPToUI(%s)" (show e)
-    show (SIToFPExpr e) = printf "SIToFP(%s)" (show e)
-    show (UIToFPExpr e) = printf "UIToFP(%s)" (show e)
-    show (PtrToIntExpr e) = printf "PtrToInt(%s)" (show e)
-    show (IntToPtrExpr e) = printf "IntToPtr(%s)" (show e)
-    show (BitcastExpr e) = printf "Bitcast(%s)" (show e)
-    show (LoadExpr e) = printf "*%s" (show e)
-    show (BinaryHelperExpr id e1 e2) = printf "%s(%s, %s)" (show id) (show e1) (show e2)
-    show (CastHelperExpr id e) = printf "%s(%s)" (show id) (show e)
+    show (AddExpr _ e1 e2) = printf "(%s + %s)" (show e1) (show e2)
+    show (SubExpr _ e1 e2) = printf "(%s - %s)" (show e1) (show e2)
+    show (MulExpr _ e1 e2) = printf "(%s * %s)" (show e1) (show e2)
+    show (DivExpr _ e1 e2) = printf "(%s / %s)" (show e1) (show e2)
+    show (RemExpr _ e1 e2) = printf "(%s % %s)" (show e1) (show e2)
+    show (ShlExpr _ e1 e2) = printf "(%s << %s)" (show e1) (show e2)
+    show (LshrExpr _ e1 e2) = printf "(%s L>> %s)" (show e1) (show e2)
+    show (AshrExpr _ e1 e2) = printf "(%s A>> %s)" (show e1) (show e2)
+    show (AndExpr _ e1 e2) = printf "(%s & %s)" (show e1) (show e2)
+    show (OrExpr _ e1 e2) = printf "(%s | %s)" (show e1) (show e2)
+    show (XorExpr _ e1 e2) = printf "(%s ^ %s)" (show e1) (show e2)
+    show (TruncExpr _ e) = printf "Trunc(%s)" (show e)
+    show (ZExtExpr _ e) = printf "ZExt(%s)" (show e)
+    show (SExtExpr _ e) = printf "SExt(%s)" (show e)
+    show (FPTruncExpr _ e) = printf "FPTrunc(%s)" (show e)
+    show (FPExtExpr _ e) = printf "FPExt(%s)" (show e)
+    show (FPToSIExpr _ e) = printf "FPToSI(%s)" (show e)
+    show (FPToUIExpr _ e) = printf "FPToUI(%s)" (show e)
+    show (SIToFPExpr _ e) = printf "SIToFP(%s)" (show e)
+    show (UIToFPExpr _ e) = printf "UIToFP(%s)" (show e)
+    show (PtrToIntExpr _ e) = printf "PtrToInt(%s)" (show e)
+    show (IntToPtrExpr _ e) = printf "IntToPtr(%s)" (show e)
+    show (BitcastExpr _ e) = printf "Bitcast(%s)" (show e)
+    show (LoadExpr _ e) = printf "*%s" (show e)
+    show (BinaryHelperExpr _ id e1 e2) = printf "%s(%s, %s)" (show id) (show e1) (show e2)
+    show (CastHelperExpr _ id e) = printf "%s(%s)" (show id) (show e)
     show (ILitExpr i) = show i
     show (FLitExpr f) = show f
-    show (InputExpr loc) = printf "Free(%s)" (show loc)
+    show (InputExpr _ loc) = printf "Free(%s)" (show loc)
+
+bits :: ExprT -> Int
+bits Int8T = 8
+bits Int32T = 32
+bits Int64T = 64
+bits t = error $ "Unexpected argument to bits: " ++ show t
 
 simplify :: Expr -> Expr
-simplify (AddExpr e1 (ILitExpr 0)) = simplify e1
-simplify (AddExpr (ILitExpr 0) e2) = simplify e2
-simplify (AddExpr e1 e2) = AddExpr (simplify e1) (simplify e2)
-simplify (SubExpr e1 e2) = SubExpr (simplify e1) (simplify e2)
-simplify (MulExpr e1 e2) = MulExpr (simplify e1) (simplify e2)
-simplify (DivExpr e1 e2) = DivExpr (simplify e1) (simplify e2)
-simplify (RemExpr e1 e2) = RemExpr (simplify e1) (simplify e2)
-simplify (ShlExpr e1 e2) = ShlExpr (simplify e1) (simplify e2)
-simplify (LshrExpr e1 e2) = LshrExpr (simplify e1) (simplify e2)
-simplify (AshrExpr e1 e2) = AshrExpr (simplify e1) (simplify e2)
-simplify (AndExpr e1 e2) = AndExpr (simplify e1) (simplify e2)
-simplify (OrExpr e1 e2) = OrExpr (simplify e1) (simplify e2)
-simplify (XorExpr e1 e2) = XorExpr (simplify e1) (simplify e2)
-simplify (TruncExpr (ZExtExpr e)) = simplify e
-simplify (TruncExpr (SExtExpr e)) = simplify e
-simplify (TruncExpr e) = TruncExpr (simplify e)
-simplify (ZExtExpr e) = ZExtExpr (simplify e)
-simplify (SExtExpr e) = SExtExpr (simplify e)
-simplify (FPTruncExpr e) = FPTruncExpr (simplify e)
-simplify (FPExtExpr e) = FPExtExpr (simplify e)
-simplify (FPToSIExpr e) = FPToSIExpr (simplify e)
-simplify (FPToUIExpr e) = FPToUIExpr (simplify e)
-simplify (SIToFPExpr e) = SIToFPExpr (simplify e)
-simplify (UIToFPExpr e) = UIToFPExpr (simplify e)
-simplify (PtrToIntExpr e) = PtrToIntExpr (simplify e)
-simplify (IntToPtrExpr e) = IntToPtrExpr (simplify e)
-simplify (BitcastExpr e) = BitcastExpr (simplify e)
-simplify (LoadExpr e) = LoadExpr (simplify e)
-simplify (BinaryHelperExpr id e1 e2) = BinaryHelperExpr id (simplify e1) (simplify e2)
-simplify (CastHelperExpr id e) = CastHelperExpr id (simplify e)
+simplify (AddExpr t e1 (ILitExpr 0)) = simplify e1
+simplify (AddExpr t (ILitExpr 0) e2) = simplify e2
+simplify (AddExpr t e1 e2) = AddExpr t (simplify e1) (simplify e2)
+simplify (SubExpr t e1 e2) = SubExpr t (simplify e1) (simplify e2)
+simplify (MulExpr t e1 e2) = MulExpr t (simplify e1) (simplify e2)
+simplify (DivExpr t e1 e2) = DivExpr t (simplify e1) (simplify e2)
+simplify (RemExpr t e1 e2) = RemExpr t (simplify e1) (simplify e2)
+simplify (ShlExpr t e1 e2) = ShlExpr t (simplify e1) (simplify e2)
+simplify (LshrExpr t e1 e2) = LshrExpr t (simplify e1) (simplify e2)
+simplify (AshrExpr _ (ILitExpr 0) _) = ILitExpr 0
+simplify (AshrExpr t e1 e2) = AshrExpr t (simplify e1) (simplify e2)
+simplify (AndExpr t e1 e2) = AndExpr t (simplify e1) (simplify e2)
+simplify (OrExpr t e1 e2) = OrExpr t (simplify e1) (simplify e2)
+simplify (XorExpr t e1 e2) = XorExpr t (simplify e1) (simplify e2)
+simplify (TruncExpr _ (ZExtExpr _ e)) = simplify e
+simplify (TruncExpr _ (SExtExpr _ e)) = simplify e
+simplify expr@(TruncExpr t e@(ILitExpr int))
+    | int < 2 ^ bits t = e
+    | otherwise = expr
+simplify (TruncExpr t e) = TruncExpr t (simplify e)
+simplify (ZExtExpr t e@ILitExpr{}) = e
+simplify (ZExtExpr t e) = ZExtExpr t (simplify e)
+simplify (SExtExpr t e@ILitExpr{}) = e -- FIXME: add typing to lits
+simplify (SExtExpr t e) = SExtExpr t (simplify e)
+simplify (FPTruncExpr t e) = FPTruncExpr t (simplify e)
+simplify (FPExtExpr t e) = FPExtExpr t (simplify e)
+simplify (FPToSIExpr t e) = FPToSIExpr t (simplify e)
+simplify (FPToUIExpr t e) = FPToUIExpr t (simplify e)
+simplify (SIToFPExpr t e) = SIToFPExpr t (simplify e)
+simplify (UIToFPExpr t e) = UIToFPExpr t (simplify e)
+simplify (PtrToIntExpr t1 (IntToPtrExpr t2 e)) = simplify e
+simplify (IntToPtrExpr t1 (PtrToIntExpr Int64T e)) = simplify e
+simplify (PtrToIntExpr t e) = PtrToIntExpr t (simplify e)
+simplify (IntToPtrExpr t e) = IntToPtrExpr t (simplify e)
+simplify (BitcastExpr t e) = BitcastExpr t (simplify e)
+simplify (LoadExpr t e) = LoadExpr t (simplify e)
+simplify (BinaryHelperExpr t id e1 e2) = BinaryHelperExpr t id (simplify e1) (simplify e2)
+simplify (CastHelperExpr t id e) = CastHelperExpr t id (simplify e)
 simplify e = e
+
+-- Simple type system
+typeToExprT :: Type -> ExprT
+typeToExprT (TypeInteger 8) = Int8T
+typeToExprT (TypeInteger 32) = Int32T
+typeToExprT (TypeInteger 64) = Int32T
+typeToExprT (TypePointer _ _) = PtrT
+typeToExprT (TypeFloat) = FloatT
+typeToExprT (TypeDouble) = DoubleT
+typeToExprT _ = VoidT
+
+exprTOfInst :: Instruction -> ExprT
+exprTOfInst = typeToExprT . instructionType
 
 -- Representation of our [partial] knowledge of machine state.
 type Info = M.Map Loc Expr
@@ -128,7 +157,7 @@ noInfo :: Info
 noInfo = M.empty
 
 valueAt :: Loc -> Info -> Expr
-valueAt loc =  M.findWithDefault (InputExpr loc) loc
+valueAt loc =  M.findWithDefault (InputExpr Int64T loc) loc
 
 instructionToExpr :: Info -> Instruction -> Maybe Expr
 instructionToExpr info inst = do
@@ -137,16 +166,18 @@ instructionToExpr info inst = do
 
 valueContentToExpr :: Info -> ValueContent -> Maybe Expr
 valueContentToExpr info (ConstantC (ConstantFP _ _ value)) = Just $ FLitExpr value 
-valueContentToExpr info (ConstantC (ConstantInt _ _ value)) = Just $ ILitExpr value 
+valueContentToExpr info (ConstantC (ConstantInt _ _ value)) = Just $ ILitExpr value
 valueContentToExpr info (ConstantC (ConstantValue{ constantInstruction = inst })) = instructionToExpr info inst
 valueContentToExpr info (InstructionC inst) = instructionToExpr info inst
-valueContentToExpr info (ArgumentC (Argument{ argumentName = name })) = Just $ InputExpr (IdLoc name)
+valueContentToExpr info (ArgumentC (Argument{ argumentName = name,
+                                              argumentType = argType }))
+    = Just $ InputExpr (typeToExprT argType) (IdLoc name)
 valueContentToExpr info val = trace ("Couldn't find expr for " ++ show val) Nothing
 
 valueToExpr :: Info -> Value -> Maybe Expr
 valueToExpr info = valueContentToExpr info . valueContent
 
-binaryInstToExprConstructor :: Instruction -> Maybe (Expr -> Expr -> Expr)
+binaryInstToExprConstructor :: Instruction -> Maybe (ExprT -> Expr -> Expr -> Expr)
 binaryInstToExprConstructor AddInst{} = Just AddExpr
 binaryInstToExprConstructor SubInst{} = Just SubExpr
 binaryInstToExprConstructor MulInst{} = Just MulExpr
@@ -165,9 +196,9 @@ binaryInstToExpr info inst = do
     exprConstructor <- binaryInstToExprConstructor inst
     lhs <- valueToExpr info $ binaryLhs inst
     rhs <- valueToExpr info $ binaryRhs inst
-    return $ exprConstructor lhs rhs
+    return $ exprConstructor (exprTOfInst inst) lhs rhs
 
-castInstToExprConstructor :: Instruction -> Maybe (Expr -> Expr)
+castInstToExprConstructor :: Instruction -> Maybe (ExprT -> Expr -> Expr)
 castInstToExprConstructor TruncInst{} = Just TruncExpr
 castInstToExprConstructor ZExtInst{} = Just ZExtExpr
 castInstToExprConstructor SExtInst{} = Just SExtExpr
@@ -186,14 +217,14 @@ castInstToExpr :: Info -> Instruction -> Maybe Expr
 castInstToExpr info inst = do
     exprConstructor <- castInstToExprConstructor inst
     value <- valueToExpr info $ castedValue inst
-    return $ exprConstructor value
+    return $ exprConstructor (exprTOfInst inst) value
 
 -- TODO: clean up
 loadInstToExpr :: Info -> (Instruction, Maybe MemlogOp) -> Maybe Expr
 loadInstToExpr info (inst@LoadInst{ loadAddress = addr },
-                     Just (AddrMemlogOp LoadOp addrEntry)) = do
-    -- trace ("LOAD: " ++ show inst ++ " ===> " ++ show addrEntry) $ return ()
-    M.lookup (MemLoc addrEntry) info <|> liftM LoadExpr (valueToExpr info addr)
+                     Just (AddrMemlogOp LoadOp addrEntry))
+    = M.lookup (MemLoc addrEntry) info <|>
+      liftM (LoadExpr $ exprTOfInst inst) (valueToExpr info addr)
 loadInstToExpr _ _ = Nothing
 
 gepInstToExpr :: Info -> Instruction -> Maybe Expr
@@ -207,7 +238,7 @@ gepInstToExpr info inst@GetElementPtrInst{ _instructionType = instType,
     index <- case map valueContent indices of
         [ConstantC (ConstantInt{ constantIntValue = idx })] -> Just idx
         other -> trace ("Value failure: " ++ show other) Nothing
-    return $ IntToPtrExpr $ AddExpr valueExpr (ILitExpr $ fromIntegral size * index)
+    return $ IntToPtrExpr PtrT $ AddExpr (exprTOfInst inst) valueExpr (ILitExpr $ fromIntegral size * index)
 gepInstToExpr _ _ = Nothing
 
 helperInstToExpr :: Info -> Instruction -> Maybe Expr
@@ -217,11 +248,11 @@ helperInstToExpr info inst@CallInst{ callFunction = funcValue,
         | "helper_" `L.isPrefixOf` identifierAsString funcId -> case funcArgs of
             [(argVal, _)] -> do
                 argExpr <- valueToExpr info argVal
-                return $ CastHelperExpr funcId argExpr
+                return $ CastHelperExpr (exprTOfInst inst) funcId argExpr
             [(argVal1, _), (argVal2, _)] -> do
-                argExpr1 <- valueToExpr info argVal1
-                argExpr2 <- valueToExpr info argVal2
-                return $ BinaryHelperExpr funcId argExpr1 argExpr2
+                 argExpr1 <- valueToExpr info argVal1
+                 argExpr2 <- valueToExpr info argVal2
+                 return $ BinaryHelperExpr (exprTOfInst inst) funcId argExpr1 argExpr2
             _ -> trace ("Bad funcArgs: " ++ (show funcArgs)) Nothing
         | otherwise -> Nothing
     _ -> Nothing
@@ -273,7 +304,11 @@ exprUpdate info instOp@(inst, _) = do
     expr <- (foldl1 (<|||>) instToExprs) info inst <|>
             loadInstToExpr info instOp
     -- traceShow (id, expr) $ return ()
-    return $ M.insert (IdLoc id) (simplify expr) info
+    return $ M.insert (IdLoc id) (repeatf 5 simplify expr) info
+    where repeatf 0 f x = trace "repeatf overflow, bailing" x
+          repeatf n f x
+              | x == f x = x
+              | otherwise = repeatf (n - 1) f $ f x 
 
 -- Ignore alloca and ret instructions
 nullUpdate :: Info -> (Instruction, Maybe MemlogOp) -> Maybe Info
@@ -300,8 +335,10 @@ deriving instance Show BasicBlock
 deriving instance Show ValueContent
 
 showInfo :: Info -> String
-showInfo = unlines . map showEach . M.toList
+showInfo = unlines . map showEach . filter doShow . M.toList
     where showEach (key, val) = show key ++ " -> " ++ show val
+          doShow (key, ILitExpr 0) = False
+          doShow _ = True
 
 -- data MemlogOp = LoadOp Integer | StoreOp Integer | CondBranchOp Integer
 --     deriving (Eq, Ord, Show)

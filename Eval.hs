@@ -19,6 +19,7 @@ import qualified Data.ByteString.Lazy as B
 import Control.Monad
 import Control.Monad.State.Lazy
 import Control.Monad.Trans.Class(lift)
+import Text.Printf(printf)
 
 type UInt = Word64
 
@@ -54,7 +55,41 @@ data Expr =
     ILitExpr Integer |
     FLitExpr Double |
     InputExpr Loc
-    deriving (Eq, Ord, Show)
+    deriving (Eq, Ord)
+
+instance Show Expr where
+    show (AddExpr e1 e2) = printf "(%s + %s)" (show e1) (show e2)
+    show (SubExpr e1 e2) = printf "(%s - %s)" (show e1) (show e2)
+    show (MulExpr e1 e2) = printf "(%s * %s)" (show e1) (show e2)
+    show (DivExpr e1 e2) = printf "(%s / %s)" (show e1) (show e2)
+    show (RemExpr e1 e2) = printf "(%s % %s)" (show e1) (show e2)
+    show (ShlExpr e1 e2) = printf "(%s << %s)" (show e1) (show e2)
+    show (LshrExpr e1 e2) = printf "(%s L>> %s)" (show e1) (show e2)
+    show (AshrExpr e1 e2) = printf "(%s A>> %s)" (show e1) (show e2)
+    show (AndExpr e1 e2) = printf "(%s & %s)" (show e1) (show e2)
+    show (OrExpr e1 e2) = printf "(%s | %s)" (show e1) (show e2)
+    show (XorExpr e1 e2) = printf "(%s ^ %s)" (show e1) (show e2)
+    show (TruncExpr e) = printf "Trunc(%s)" (show e)
+    show (ZExtExpr e) = printf "ZExt(%s)" (show e)
+    show (SExtExpr e) = printf "SExt(%s)" (show e)
+    show (FPTruncExpr e) = printf "FPTrunc(%s)" (show e)
+    show (FPExtExpr e) = printf "FPExt(%s)" (show e)
+    show (FPToSIExpr e) = printf "FPToSI(%s)" (show e)
+    show (FPToUIExpr e) = printf "FPToUI(%s)" (show e)
+    show (SIToFPExpr e) = printf "SIToFP(%s)" (show e)
+    show (UIToFPExpr e) = printf "UIToFP(%s)" (show e)
+    show (PtrToIntExpr e) = printf "PtrToInt(%s)" (show e)
+    show (IntToPtrExpr e) = printf "IntToPtr(%s)" (show e)
+    show (BitcastExpr e) = printf "Bitcast(%s)" (show e)
+    show (LoadExpr addr) = printf "*%s" (show addr)
+    show (BinaryHelperExpr id e1 e2) = printf "%s(%s, %s)" (show id) (show e1) (show e2)
+    show (CastHelperExpr id e) = printf "%s(%s)" (show id) (show e)
+    show (ILitExpr i) = show i
+    show (FLitExpr f) = show f
+    show (InputExpr loc) = printf "Free(%s)" (show loc)
+
+simplify :: Expr -> Expr
+simplify = id
 
 -- Representation of our [partial] knowledge of machine state.
 type Info = M.Map Loc Expr
@@ -197,7 +232,7 @@ storeUpdate :: Info -> (Instruction, Maybe MemlogOp) -> Maybe Info
 storeUpdate info (inst@StoreInst{ storeIsVolatile = False,
                                   storeValue = val },
                   Just (AddrMemlogOp StoreOp addr)) = do
-    trace ("STORE: " ++ show inst ++ " ===> " ++ show addr) $ return ()
+    -- trace ("STORE: " ++ show inst ++ " ===> " ++ show addr) $ return ()
     value <- valueToExpr info val
     return $ M.insert (MemLoc addr) value info
 storeUpdate _ _ = Nothing
@@ -208,7 +243,7 @@ exprUpdate info instOp@(inst, _) = do
     expr <- (foldl1 (<|||>) instToExprs) info inst <|>
             loadInstToExpr info instOp
     -- traceShow (id, expr) $ return ()
-    return $ M.insert (IdLoc id) expr info
+    return $ M.insert (IdLoc id) (simplify expr) info
 
 -- Ignore alloca and ret instructions
 nullUpdate :: Info -> (Instruction, Maybe MemlogOp) -> Maybe Info

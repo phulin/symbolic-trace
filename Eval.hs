@@ -51,12 +51,13 @@ data Expr =
     PtrToIntExpr ExprT Expr |
     IntToPtrExpr ExprT Expr |
     BitcastExpr ExprT Expr |
-    LoadExpr ExprT Expr |
+    LoadExpr ExprT AddrEntry |
     BinaryHelperExpr ExprT Identifier Expr Expr | -- not witnessed
     CastHelperExpr ExprT Identifier Expr |
     ILitExpr Integer | -- takes any integer type
     FLitExpr Double | -- takes any float type
-    InputExpr ExprT Loc
+    InputExpr ExprT Loc |
+    IrrelevantExpr
     deriving (Eq, Ord)
 
 instance Show Expr where
@@ -83,12 +84,23 @@ instance Show Expr where
     show (PtrToIntExpr _ e) = printf "PtrToInt(%s)" (show e)
     show (IntToPtrExpr _ e) = printf "IntToPtr(%s)" (show e)
     show (BitcastExpr _ e) = printf "Bitcast(%s)" (show e)
-    show (LoadExpr _ e) = printf "*%s" (show e)
+    show (LoadExpr _ AddrEntry{ addrType = GReg, addrVal = reg }) = case reg of
+        0 -> "EAX"
+        1 -> "ECX"
+        2 -> "EDX"
+        3 -> "EBX"
+        4 -> "ESP"
+        5 -> "EBP"
+        6 -> "ESI"
+        7 -> "EDI"
+        _ -> "Reg" ++ show reg
+    show (LoadExpr _ addr) = printf "*%s" (show addr)
     show (BinaryHelperExpr _ id e1 e2) = printf "%s(%s, %s)" (show id) (show e1) (show e2)
     show (CastHelperExpr _ id e) = printf "%s(%s)" (show id) (show e)
     show (ILitExpr i) = show i
     show (FLitExpr f) = show f
-    show (InputExpr _ loc) = printf "Free(%s)" (show loc)
+    show (InputExpr _ loc) = printf "(%s)" (show loc)
+    show (IrrelevantExpr) = "IRRELEVANT"
 
 bits :: ExprT -> Int
 bits Int8T = 8
@@ -132,7 +144,7 @@ simplify (IntToPtrExpr t1 (PtrToIntExpr Int64T e)) = simplify e
 simplify (PtrToIntExpr t e) = PtrToIntExpr t (simplify e)
 simplify (IntToPtrExpr t e) = IntToPtrExpr t (simplify e)
 simplify (BitcastExpr t e) = BitcastExpr t (simplify e)
-simplify (LoadExpr t e) = LoadExpr t (simplify e)
+-- simplify (LoadExpr t e) = LoadExpr t (simplify e)
 simplify (BinaryHelperExpr t id e1 e2) = BinaryHelperExpr t id (simplify e1) (simplify e2)
 simplify (CastHelperExpr t id e) = CastHelperExpr t id (simplify e)
 simplify e = e
@@ -159,89 +171,132 @@ noInfo = M.empty
 valueAt :: Loc -> Info -> Expr
 valueAt loc =  M.findWithDefault (InputExpr Int64T loc) loc
 
-instructionToExpr :: Info -> Instruction -> Maybe Expr
-instructionToExpr info inst = do
-    name <- instructionName inst
-    return $ valueAt (IdLoc name) info
+data BuildExpr a
+    = Irrelevant
+    | ErrorI String
+    | JustI a
 
-valueContentToExpr :: Info -> ValueContent -> Maybe Expr
-valueContentToExpr info (ConstantC (ConstantFP _ _ value)) = Just $ FLitExpr value 
-valueContentToExpr info (ConstantC (ConstantInt _ _ value)) = Just $ ILitExpr value
+instance Monad BuildExpr where
+    JustI x >>= f = f x
+    Irrelevant >>= _ = Irrelevant
+    ErrorI s >>= _ = ErrorI s
+    return = JustI
+    fail s = ErrorI s
+
+instance Functor BuildExpr where
+    fmap f x = x >>= return . f
+
+instance Applicative BuildExpr where
+    pure = return
+    (<*>) = ap
+
+instance Alternative BuildExpr where
+    empty = ErrorI ""
+    JustI x <|> _  = JustI x
+    Irrelevant <|> _ = Irrelevant
+    ErrorI _ <|> JustI x = JustI x
+    ErrorI _ <|> Irrelevant = Irrelevant
+    ErrorI s <|> ErrorI _ = ErrorI s
+
+buildExprToMaybeExpr :: BuildExpr Expr -> Maybe Expr
+buildExprToMaybeExpr (JustI e) = Just e
+buildExprToMaybeExpr (ErrorI s) = trace s Nothing
+buildExprToMaybeExpr Irrelevant = Just IrrelevantExpr
+
+maybeToM :: (Monad m) => Maybe a -> m a
+maybeToM (Just x) = return x
+maybeToM (Nothing) = fail ""
+
+instructionToExpr :: Info -> Instruction -> BuildExpr Expr
+instructionToExpr info inst = do
+    name <- case instructionName inst of
+        Just n -> return n
+        Nothing -> ErrorI "No name for inst"
+    case valueAt (IdLoc name) info of
+        IrrelevantExpr -> Irrelevant
+        e -> return e
+
+valueContentToExpr :: Info -> ValueContent -> BuildExpr Expr
+valueContentToExpr info (ConstantC (ConstantFP _ _ value)) = return $ FLitExpr value 
+valueContentToExpr info (ConstantC (ConstantInt _ _ value)) = return $ ILitExpr value
 valueContentToExpr info (ConstantC (ConstantValue{ constantInstruction = inst })) = instructionToExpr info inst
 valueContentToExpr info (InstructionC inst) = instructionToExpr info inst
 valueContentToExpr info (ArgumentC (Argument{ argumentName = name,
                                               argumentType = argType }))
-    = Just $ InputExpr (typeToExprT argType) (IdLoc name)
-valueContentToExpr info val = trace ("Couldn't find expr for " ++ show val) Nothing
+    = return $ InputExpr (typeToExprT argType) (IdLoc name)
+valueContentToExpr info val = trace ("Couldn't find expr for " ++ show val) fail ""
 
-valueToExpr :: Info -> Value -> Maybe Expr
+valueToExpr :: Info -> Value -> BuildExpr Expr
 valueToExpr info = valueContentToExpr info . valueContent
 
-binaryInstToExprConstructor :: Instruction -> Maybe (ExprT -> Expr -> Expr -> Expr)
-binaryInstToExprConstructor AddInst{} = Just AddExpr
-binaryInstToExprConstructor SubInst{} = Just SubExpr
-binaryInstToExprConstructor MulInst{} = Just MulExpr
-binaryInstToExprConstructor DivInst{} = Just DivExpr
-binaryInstToExprConstructor RemInst{} = Just RemExpr
-binaryInstToExprConstructor ShlInst{} = Just ShlExpr
-binaryInstToExprConstructor LshrInst{} = Just LshrExpr
-binaryInstToExprConstructor AshrInst{} = Just AshrExpr
-binaryInstToExprConstructor AndInst{} = Just AndExpr
-binaryInstToExprConstructor OrInst{} = Just OrExpr
-binaryInstToExprConstructor XorInst{} = Just XorExpr
-binaryInstToExprConstructor _ = Nothing
+binaryInstToExprConstructor :: Instruction -> BuildExpr (ExprT -> Expr -> Expr -> Expr)
+binaryInstToExprConstructor AddInst{} = return AddExpr
+binaryInstToExprConstructor SubInst{} = return SubExpr
+binaryInstToExprConstructor MulInst{} = return MulExpr
+binaryInstToExprConstructor DivInst{} = return DivExpr
+binaryInstToExprConstructor RemInst{} = return RemExpr
+binaryInstToExprConstructor ShlInst{} = return ShlExpr
+binaryInstToExprConstructor LshrInst{} = return LshrExpr
+binaryInstToExprConstructor AshrInst{} = return AshrExpr
+binaryInstToExprConstructor AndInst{} = return AndExpr
+binaryInstToExprConstructor OrInst{} = return OrExpr
+binaryInstToExprConstructor XorInst{} = return XorExpr
+binaryInstToExprConstructor _ = fail ""
 
-binaryInstToExpr :: Info -> Instruction -> Maybe Expr
+binaryInstToExpr :: Info -> Instruction -> BuildExpr Expr
 binaryInstToExpr info inst = do
     exprConstructor <- binaryInstToExprConstructor inst
     lhs <- valueToExpr info $ binaryLhs inst
     rhs <- valueToExpr info $ binaryRhs inst
     return $ exprConstructor (exprTOfInst inst) lhs rhs
 
-castInstToExprConstructor :: Instruction -> Maybe (ExprT -> Expr -> Expr)
-castInstToExprConstructor TruncInst{} = Just TruncExpr
-castInstToExprConstructor ZExtInst{} = Just ZExtExpr
-castInstToExprConstructor SExtInst{} = Just SExtExpr
-castInstToExprConstructor FPTruncInst{} = Just FPTruncExpr
-castInstToExprConstructor FPExtInst{} = Just FPExtExpr
-castInstToExprConstructor FPToSIInst{} = Just FPToSIExpr
-castInstToExprConstructor FPToUIInst{} = Just FPToUIExpr
-castInstToExprConstructor SIToFPInst{} = Just SIToFPExpr
-castInstToExprConstructor UIToFPInst{} = Just UIToFPExpr
-castInstToExprConstructor PtrToIntInst{} = Just PtrToIntExpr
-castInstToExprConstructor IntToPtrInst{} = Just IntToPtrExpr
-castInstToExprConstructor BitcastInst{} = Just BitcastExpr
-castInstToExprConstructor _ = Nothing
+castInstToExprConstructor :: Instruction -> BuildExpr (ExprT -> Expr -> Expr)
+castInstToExprConstructor TruncInst{} = return TruncExpr
+castInstToExprConstructor ZExtInst{} = return ZExtExpr
+castInstToExprConstructor SExtInst{} = return SExtExpr
+castInstToExprConstructor FPTruncInst{} = return FPTruncExpr
+castInstToExprConstructor FPExtInst{} = return FPExtExpr
+castInstToExprConstructor FPToSIInst{} = return FPToSIExpr
+castInstToExprConstructor FPToUIInst{} = return FPToUIExpr
+castInstToExprConstructor SIToFPInst{} = return SIToFPExpr
+castInstToExprConstructor UIToFPInst{} = return UIToFPExpr
+castInstToExprConstructor PtrToIntInst{} = return PtrToIntExpr
+castInstToExprConstructor IntToPtrInst{} = return IntToPtrExpr
+castInstToExprConstructor BitcastInst{} = return BitcastExpr
+castInstToExprConstructor _ = fail ""
 
-castInstToExpr :: Info -> Instruction -> Maybe Expr
+castInstToExpr :: Info -> Instruction -> BuildExpr Expr
 castInstToExpr info inst = do
     exprConstructor <- castInstToExprConstructor inst
     value <- valueToExpr info $ castedValue inst
     return $ exprConstructor (exprTOfInst inst) value
 
 -- TODO: clean up
-loadInstToExpr :: Info -> (Instruction, Maybe MemlogOp) -> Maybe Expr
+loadInstToExpr :: Info -> (Instruction, Maybe MemlogOp) -> BuildExpr Expr
 loadInstToExpr info (inst@LoadInst{ loadAddress = addr },
                      Just (AddrMemlogOp LoadOp addrEntry))
-    = M.lookup (MemLoc addrEntry) info <|>
-      liftM (LoadExpr $ exprTOfInst inst) (valueToExpr info addr)
-loadInstToExpr _ _ = Nothing
+    = case addrFlag addrEntry of
+        IrrelevantFlag -> Irrelevant -- Ignore parts of CPU state that Panda doesn't track.
+        _ -> maybeToM (M.lookup (MemLoc addrEntry) info) <|>
+             liftM (LoadExpr $ exprTOfInst inst) (return addrEntry)
+      -- liftM (LoadExpr $ exprTOfInst inst) (valueToExpr info addr)
+loadInstToExpr _ _ = fail ""
 
-gepInstToExpr :: Info -> Instruction -> Maybe Expr
+gepInstToExpr :: Info -> Instruction -> BuildExpr Expr
 gepInstToExpr info inst@GetElementPtrInst{ _instructionType = instType,
                                            getElementPtrValue = value,
                                            getElementPtrIndices = indices } = do
     valueExpr <- valueToExpr info value
     size <- case instType of
-        TypePointer (TypeInteger bits) _ -> Just $ bits `quot` 8
-        other -> trace ("Type failure: " ++ show other) Nothing
+        TypePointer (TypeInteger bits) _ -> return $ bits `quot` 8
+        other -> trace ("Type failure: " ++ show other) fail ""
     index <- case map valueContent indices of
-        [ConstantC (ConstantInt{ constantIntValue = idx })] -> Just idx
-        other -> trace ("Value failure: " ++ show other) Nothing
+        [ConstantC (ConstantInt{ constantIntValue = idx })] -> return idx
+        other -> trace ("Value failure: " ++ show other) fail ""
     return $ IntToPtrExpr PtrT $ AddExpr (exprTOfInst inst) valueExpr (ILitExpr $ fromIntegral size * index)
-gepInstToExpr _ _ = Nothing
+gepInstToExpr _ _ = fail ""
 
-helperInstToExpr :: Info -> Instruction -> Maybe Expr
+helperInstToExpr :: Info -> Instruction -> BuildExpr Expr
 helperInstToExpr info inst@CallInst{ callFunction = funcValue,
                                      callArguments = funcArgs } = case valueContent funcValue of
     ExternalFunctionC (ExternalFunction{ externalFunctionName = funcId })
@@ -253,10 +308,10 @@ helperInstToExpr info inst@CallInst{ callFunction = funcValue,
                  argExpr1 <- valueToExpr info argVal1
                  argExpr2 <- valueToExpr info argVal2
                  return $ BinaryHelperExpr (exprTOfInst inst) funcId argExpr1 argExpr2
-            _ -> trace ("Bad funcArgs: " ++ (show funcArgs)) Nothing
-        | otherwise -> Nothing
-    _ -> Nothing
-helperInstToExpr _ _ = Nothing
+            _ -> trace ("Bad funcArgs: " ++ (show funcArgs)) $ fail ""
+        | otherwise -> fail ""
+    _ -> fail ""
+helperInstToExpr _ _ = fail ""
 
 traceInst :: Instruction -> a -> a
 traceInst inst = trace ("Couldn't process inst " ++ (show inst))
@@ -280,13 +335,13 @@ maybeTraceInst inst = traceInst inst
 (<|||>) f1 f2 a b = f1 a b <|> f2 a b
 
 -- List of ways to process instructions and order in which to try them.
-instToExprs :: [Info -> Instruction -> Maybe Expr]
+instToExprs :: [Info -> Instruction -> BuildExpr Expr]
 instToExprs = [ binaryInstToExpr,
                 castInstToExpr,
                 gepInstToExpr,
                 helperInstToExpr ]
 
-memInstToExprs :: [Info -> (Instruction, Maybe MemlogOp) -> Maybe Expr]
+memInstToExprs :: [Info -> (Instruction, Maybe MemlogOp) -> BuildExpr Expr]
 memInstToExprs = [ loadInstToExpr ]
 
 storeUpdate :: Info -> (Instruction, Maybe MemlogOp) -> Maybe Info
@@ -294,15 +349,16 @@ storeUpdate info (inst@StoreInst{ storeIsVolatile = False,
                                   storeValue = val },
                   Just (AddrMemlogOp StoreOp addr)) = do
     -- trace ("STORE: " ++ show inst ++ " ===> " ++ show addr) $ return ()
-    value <- valueToExpr info val
+    value <- buildExprToMaybeExpr $ valueToExpr info val
     return $ M.insert (MemLoc addr) value info
-storeUpdate _ _ = Nothing
+storeUpdate _ _ = fail ""
 
 exprUpdate :: Info -> (Instruction, Maybe MemlogOp) -> Maybe Info
 exprUpdate info instOp@(inst, _) = do
     id <- instructionName inst
-    expr <- (foldl1 (<|||>) instToExprs) info inst <|>
-            loadInstToExpr info instOp
+    let builtExpr = (foldl1 (<|||>) instToExprs) info inst <|>
+                     loadInstToExpr info instOp
+    expr <- buildExprToMaybeExpr builtExpr
     -- traceShow (id, expr) $ return ()
     return $ M.insert (IdLoc id) (repeatf 5 simplify expr) info
     where repeatf 0 f x = trace "repeatf overflow, bailing" x
@@ -312,9 +368,9 @@ exprUpdate info instOp@(inst, _) = do
 
 -- Ignore alloca and ret instructions
 nullUpdate :: Info -> (Instruction, Maybe MemlogOp) -> Maybe Info
-nullUpdate info (AllocaInst{}, _) = Just info
-nullUpdate info (RetInst{}, _) = Just info
-nullUpdate _ _ = Nothing
+nullUpdate info (AllocaInst{}, _) = return info
+nullUpdate info (RetInst{}, _) = return info
+nullUpdate _ _ = fail ""
 
 infoUpdaters :: [Info -> (Instruction, Maybe MemlogOp) -> Maybe Info]
 infoUpdaters = [ exprUpdate, storeUpdate, nullUpdate ]
@@ -337,7 +393,8 @@ deriving instance Show ValueContent
 showInfo :: Info -> String
 showInfo = unlines . map showEach . filter doShow . M.toList
     where showEach (key, val) = show key ++ " -> " ++ show val
-          doShow (key, ILitExpr 0) = False
+          doShow (_, ILitExpr 0) = False
+          doShow (_, IrrelevantExpr) = False
           doShow _ = True
 
 -- data MemlogOp = LoadOp Integer | StoreOp Integer | CondBranchOp Integer

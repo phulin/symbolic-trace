@@ -17,8 +17,8 @@ import Debug.Trace
 import Data.Binary.Get(Get, runGet, getWord32host, getWord64host, skip)
 import qualified Data.ByteString.Lazy as B
 import Control.Monad
-import Control.Monad.State.Lazy
-import Control.Monad.Trans.Class(lift)
+import Control.Monad.Trans.State.Lazy
+import Control.Monad.Trans.Class(lift, MonadTrans)
 import Control.Monad.Trans.Maybe
 import Text.Printf(printf)
 
@@ -165,12 +165,34 @@ exprTOfInst = typeToExprT . instructionType
 
 -- Representation of our [partial] knowledge of machine state.
 type Info = M.Map Loc Expr
+data SymbolicState = SymbolicState {
+        symbolicInfo :: Info,
+        symbolicNextBlock :: Maybe BasicBlock
+    } deriving (Eq, Ord, Show)
+type Symbolic = State SymbolicState
 
-noInfo :: Info
-noInfo = M.empty
+getInfo :: Symbolic Info
+getInfo = symbolicInfo <$> get
+getNextBlock :: Symbolic (Maybe BasicBlock)
+getNextBlock = symbolicNextBlock <$> get
+putInfo :: Info -> Symbolic ()
+putInfo info = modify (\s -> s{ symbolicInfo = info })
+putNextBlock :: Maybe BasicBlock -> Symbolic ()
+putNextBlock maybeBlock = modify (\s -> s{ symbolicNextBlock = maybeBlock })
 
-valueAt :: Loc -> State Info Expr
-valueAt loc = M.findWithDefault (InputExpr Int64T loc) loc <$> get
+infoInsert :: Loc -> Expr -> Symbolic ()
+infoInsert key value = do
+    SymbolicState{ symbolicInfo = info } <- get
+    putInfo $ M.insert key value info
+infoFind :: Expr -> Loc -> Symbolic Expr
+infoFind def key = M.findWithDefault def key <$> getInfo
+
+noSymbolicState :: SymbolicState
+noSymbolicState = SymbolicState{ symbolicInfo = M.empty,
+                                 symbolicNextBlock = Nothing }
+
+valueAt :: Loc -> Symbolic Expr
+valueAt loc = infoFind (InputExpr Int64T loc) loc
 
 data BuildExprM a
     = Irrelevant
@@ -179,7 +201,7 @@ data BuildExprM a
 
 newtype BuildExprT m a = BuildExprT { runBuildExprT :: m (BuildExprM a) }
 
-type BuildExpr a = BuildExprT (State Info) a
+type BuildExpr a = BuildExprT (Symbolic) a
 
 instance (Monad m) => Monad (BuildExprT m) where
     x >>= f = BuildExprT $ do
@@ -299,7 +321,7 @@ castInstToExpr inst = do
 loadInstToExpr :: (Instruction, Maybe MemlogOp) -> BuildExpr Expr
 loadInstToExpr (inst@LoadInst{ loadAddress = addr },
                 Just (AddrMemlogOp LoadOp addrEntry)) = do
-    info <- lift get
+    info <- lift getInfo
     case addrFlag addrEntry of
         IrrelevantFlag -> irrelevant -- Ignore parts of CPU state that Panda doesn't track.
         _ -> maybeToM (M.lookup (MemLoc addrEntry) info) <|>
@@ -357,9 +379,6 @@ maybeTraceInst inst = traceInst inst
 (<||>) :: Alternative f => (a -> f b) -> (a -> f b) -> a -> f b
 (<||>) f1 f2 a = f1 a <|> f2 a
 
-(<|||>) :: Alternative f => (a -> b -> f c) -> (a -> b -> f c) -> a -> b -> f c
-(<|||>) f1 f2 a b = f1 a b <|> f2 a b
-
 -- List of ways to process instructions and order in which to try them.
 instToExprs :: [Instruction -> BuildExpr Expr]
 instToExprs = [ binaryInstToExpr,
@@ -370,7 +389,7 @@ instToExprs = [ binaryInstToExpr,
 memInstToExprs :: [(Instruction, Maybe MemlogOp) -> BuildExpr Expr]
 memInstToExprs = [ loadInstToExpr ]
 
-type MaybeInfoM = MaybeT (State Info)
+type MaybeInfoM = MaybeT (Symbolic)
 
 storeUpdate :: (Instruction, Maybe MemlogOp) -> MaybeInfoM ()
 storeUpdate (inst@StoreInst{ storeIsVolatile = False,
@@ -378,7 +397,7 @@ storeUpdate (inst@StoreInst{ storeIsVolatile = False,
                   Just (AddrMemlogOp StoreOp addr)) = do
     -- trace ("STORE: " ++ show inst ++ " ===> " ++ show addr) $ return ()
     value <- buildExprToMaybeExpr $ valueToExpr val
-    lift $ modify $ M.insert (MemLoc addr) value
+    lift $ infoInsert (MemLoc addr) value
 storeUpdate _ = fail ""
 
 exprUpdate :: (Instruction, Maybe MemlogOp) -> MaybeInfoM ()
@@ -388,7 +407,7 @@ exprUpdate instOp@(inst, _) = do
                      loadInstToExpr instOp
     expr <- buildExprToMaybeExpr builtExpr
     -- traceShow (id, expr) $ return ()
-    lift $ modify $ M.insert (IdLoc id) (repeatf 5 simplify expr)
+    lift $ infoInsert (IdLoc id) (repeatf 5 simplify expr)
     where repeatf 0 f x = trace "repeatf overflow, bailing" x
           repeatf n f x
               | x == f x = x
@@ -403,12 +422,21 @@ nullUpdate _ = fail ""
 infoUpdaters :: [(Instruction, Maybe MemlogOp) -> MaybeInfoM ()]
 infoUpdaters = [ exprUpdate, storeUpdate, nullUpdate ]
 
-updateInfo :: (Instruction, Maybe MemlogOp) -> State Info ()
+updateInfo :: (Instruction, Maybe MemlogOp) -> Symbolic ()
 updateInfo instOp@(inst, _) = void $ runMaybeT $ foldl1 (<||>) infoUpdaters instOp
 
-runBlock :: Info -> MemlogMap -> BasicBlock -> Info
-runBlock info memlogMap block = execState (mapM_ updateInfo instOpList) info
+runBlock :: MemlogMap -> BasicBlock -> Symbolic ()
+runBlock memlogMap block = do
+    mapM updateInfo instOpList
+    nextBlock <- getNextBlock
+    case nextBlock of
+        Just block -> runBlock memlogMap block
+        Nothing -> return ()
     where instOpList = M.findWithDefault (error "Couldn't find basic block instruction list") block memlogMap
+
+runFunction :: MemlogMap -> Function -> Info
+runFunction memlogMap f = symbolicInfo $ execState computation noSymbolicState
+    where computation = runBlock memlogMap $ head $ functionBody f
 
 deriving instance Show Constant
 deriving instance Show ExternalValue
@@ -563,5 +591,4 @@ main = do
     let memlog = runGet (many getMemlogEntry) memlogBytes
     let associated = associateFuncs memlog mainName funcList
     -- putStrLn $ showAssociated associated
-    let basicBlock = seq (associateFuncs memlog mainName funcList) $ head $ functionBody $ findFunc mainName
-    putStrLn $ showInfo $ runBlock noInfo associated basicBlock
+    putStrLn $ showInfo $ runFunction associated $ findFunc mainName

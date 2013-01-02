@@ -19,6 +19,7 @@ import qualified Data.ByteString.Lazy as B
 import Control.Monad
 import Control.Monad.State.Lazy
 import Control.Monad.Trans.Class(lift)
+import Control.Monad.Trans.Maybe
 import Text.Printf(printf)
 
 type UInt = Word64
@@ -168,66 +169,89 @@ type Info = M.Map Loc Expr
 noInfo :: Info
 noInfo = M.empty
 
-valueAt :: Loc -> Info -> Expr
-valueAt loc =  M.findWithDefault (InputExpr Int64T loc) loc
+valueAt :: Loc -> State Info Expr
+valueAt loc = M.findWithDefault (InputExpr Int64T loc) loc <$> get
 
-data BuildExpr a
+data BuildExprM a
     = Irrelevant
     | ErrorI String
     | JustI a
 
-instance Monad BuildExpr where
-    JustI x >>= f = f x
-    Irrelevant >>= _ = Irrelevant
-    ErrorI s >>= _ = ErrorI s
-    return = JustI
-    fail s = ErrorI s
+newtype BuildExprT m a = BuildExprT { runBuildExprT :: m (BuildExprM a) }
 
-instance Functor BuildExpr where
+type BuildExpr a = BuildExprT (State Info) a
+
+instance (Monad m) => Monad (BuildExprT m) where
+    x >>= f = BuildExprT $ do
+        v <- runBuildExprT x
+        case v of
+            JustI y -> runBuildExprT (f y)
+            Irrelevant -> return Irrelevant
+            ErrorI s -> return $ ErrorI s
+    return x = BuildExprT (return $ JustI x)
+    fail e = BuildExprT (return $ ErrorI e)
+
+instance MonadTrans BuildExprT where
+    lift m = BuildExprT $ do
+        x <- m
+        return $ JustI x
+
+irrelevant :: (Monad m) => BuildExprT m a
+irrelevant = BuildExprT $ return Irrelevant
+
+instance (Monad m) => Functor (BuildExprT m) where
     fmap f x = x >>= return . f
 
-instance Applicative BuildExpr where
+instance (Monad m) => Applicative (BuildExprT m) where
     pure = return
     (<*>) = ap
 
-instance Alternative BuildExpr where
-    empty = ErrorI ""
-    JustI x <|> _  = JustI x
-    Irrelevant <|> _ = Irrelevant
-    ErrorI _ <|> JustI x = JustI x
-    ErrorI _ <|> Irrelevant = Irrelevant
-    ErrorI s <|> ErrorI _ = ErrorI s
+instance (Monad m) => Alternative (BuildExprT m) where
+    empty = BuildExprT $ return $ ErrorI ""
+    mx <|> my = BuildExprT $ do
+        x <- runBuildExprT mx
+        y <- runBuildExprT my
+        case (x, y) of
+            (JustI z, _) -> return $ JustI z
+            (Irrelevant, _) -> return Irrelevant
+            (ErrorI _, JustI z) -> return $ JustI z
+            (ErrorI _, Irrelevant) -> return Irrelevant
+            (ErrorI s, ErrorI _) -> return $ ErrorI s
 
-buildExprToMaybeExpr :: BuildExpr Expr -> Maybe Expr
-buildExprToMaybeExpr (JustI e) = Just e
-buildExprToMaybeExpr (ErrorI s) = trace s Nothing
-buildExprToMaybeExpr Irrelevant = Just IrrelevantExpr
+buildExprToMaybeExpr :: (Functor m, Monad m) => BuildExprT m Expr -> MaybeT m Expr
+buildExprToMaybeExpr = MaybeT . fmap buildExprMToMaybeExpr . runBuildExprT
+
+buildExprMToMaybeExpr :: BuildExprM Expr -> Maybe Expr
+buildExprMToMaybeExpr (JustI e) = Just e
+buildExprMToMaybeExpr (ErrorI s) = trace s Nothing
+buildExprMToMaybeExpr Irrelevant = Just IrrelevantExpr
 
 maybeToM :: (Monad m) => Maybe a -> m a
 maybeToM (Just x) = return x
 maybeToM (Nothing) = fail ""
 
-instructionToExpr :: Info -> Instruction -> BuildExpr Expr
-instructionToExpr info inst = do
+instructionToExpr :: Instruction -> BuildExpr Expr
+instructionToExpr inst = do
     name <- case instructionName inst of
         Just n -> return n
-        Nothing -> ErrorI "No name for inst"
-    case valueAt (IdLoc name) info of
-        IrrelevantExpr -> Irrelevant
+        Nothing -> fail "No name for inst"
+    value <- lift $ valueAt (IdLoc name)
+    case value of
+        IrrelevantExpr -> irrelevant
         e -> return e
 
-valueContentToExpr :: Info -> ValueContent -> BuildExpr Expr
-valueContentToExpr info (ConstantC (ConstantFP _ _ value)) = return $ FLitExpr value 
-valueContentToExpr info (ConstantC (ConstantInt _ _ value)) = return $ ILitExpr value
-valueContentToExpr info (ConstantC (ConstantValue{ constantInstruction = inst })) = instructionToExpr info inst
-valueContentToExpr info (InstructionC inst) = instructionToExpr info inst
-valueContentToExpr info (ArgumentC (Argument{ argumentName = name,
-                                              argumentType = argType }))
+valueContentToExpr :: ValueContent -> BuildExpr Expr
+valueContentToExpr (ConstantC (ConstantFP _ _ value)) = return $ FLitExpr value 
+valueContentToExpr (ConstantC (ConstantInt _ _ value)) = return $ ILitExpr value
+valueContentToExpr (ConstantC (ConstantValue{ constantInstruction = inst })) = instructionToExpr inst
+valueContentToExpr (InstructionC inst) = instructionToExpr inst
+valueContentToExpr (ArgumentC (Argument{ argumentName = name,
+                                         argumentType = argType }))
     = return $ InputExpr (typeToExprT argType) (IdLoc name)
-valueContentToExpr info val = trace ("Couldn't find expr for " ++ show val) fail ""
+valueContentToExpr val = trace ("Couldn't find expr for " ++ show val) fail ""
 
-valueToExpr :: Info -> Value -> BuildExpr Expr
-valueToExpr info = valueContentToExpr info . valueContent
+valueToExpr :: Value -> BuildExpr Expr
+valueToExpr = valueContentToExpr . valueContent
 
 binaryInstToExprConstructor :: Instruction -> BuildExpr (ExprT -> Expr -> Expr -> Expr)
 binaryInstToExprConstructor AddInst{} = return AddExpr
@@ -243,11 +267,11 @@ binaryInstToExprConstructor OrInst{} = return OrExpr
 binaryInstToExprConstructor XorInst{} = return XorExpr
 binaryInstToExprConstructor _ = fail ""
 
-binaryInstToExpr :: Info -> Instruction -> BuildExpr Expr
-binaryInstToExpr info inst = do
+binaryInstToExpr :: Instruction -> BuildExpr Expr
+binaryInstToExpr inst = do
     exprConstructor <- binaryInstToExprConstructor inst
-    lhs <- valueToExpr info $ binaryLhs inst
-    rhs <- valueToExpr info $ binaryRhs inst
+    lhs <- valueToExpr $ binaryLhs inst
+    rhs <- valueToExpr $ binaryRhs inst
     return $ exprConstructor (exprTOfInst inst) lhs rhs
 
 castInstToExprConstructor :: Instruction -> BuildExpr (ExprT -> Expr -> Expr)
@@ -265,28 +289,29 @@ castInstToExprConstructor IntToPtrInst{} = return IntToPtrExpr
 castInstToExprConstructor BitcastInst{} = return BitcastExpr
 castInstToExprConstructor _ = fail ""
 
-castInstToExpr :: Info -> Instruction -> BuildExpr Expr
-castInstToExpr info inst = do
+castInstToExpr :: Instruction -> BuildExpr Expr
+castInstToExpr inst = do
     exprConstructor <- castInstToExprConstructor inst
-    value <- valueToExpr info $ castedValue inst
+    value <- valueToExpr $ castedValue inst
     return $ exprConstructor (exprTOfInst inst) value
 
 -- TODO: clean up
-loadInstToExpr :: Info -> (Instruction, Maybe MemlogOp) -> BuildExpr Expr
-loadInstToExpr info (inst@LoadInst{ loadAddress = addr },
-                     Just (AddrMemlogOp LoadOp addrEntry))
-    = case addrFlag addrEntry of
-        IrrelevantFlag -> Irrelevant -- Ignore parts of CPU state that Panda doesn't track.
+loadInstToExpr :: (Instruction, Maybe MemlogOp) -> BuildExpr Expr
+loadInstToExpr (inst@LoadInst{ loadAddress = addr },
+                Just (AddrMemlogOp LoadOp addrEntry)) = do
+    info <- lift get
+    case addrFlag addrEntry of
+        IrrelevantFlag -> irrelevant -- Ignore parts of CPU state that Panda doesn't track.
         _ -> maybeToM (M.lookup (MemLoc addrEntry) info) <|>
              liftM (LoadExpr $ exprTOfInst inst) (return addrEntry)
       -- liftM (LoadExpr $ exprTOfInst inst) (valueToExpr info addr)
-loadInstToExpr _ _ = fail ""
+loadInstToExpr _ = fail ""
 
-gepInstToExpr :: Info -> Instruction -> BuildExpr Expr
-gepInstToExpr info inst@GetElementPtrInst{ _instructionType = instType,
-                                           getElementPtrValue = value,
-                                           getElementPtrIndices = indices } = do
-    valueExpr <- valueToExpr info value
+gepInstToExpr :: Instruction -> BuildExpr Expr
+gepInstToExpr inst@GetElementPtrInst{ _instructionType = instType,
+                                      getElementPtrValue = value,
+                                      getElementPtrIndices = indices } = do
+    valueExpr <- valueToExpr value
     size <- case instType of
         TypePointer (TypeInteger bits) _ -> return $ bits `quot` 8
         other -> trace ("Type failure: " ++ show other) fail ""
@@ -294,24 +319,25 @@ gepInstToExpr info inst@GetElementPtrInst{ _instructionType = instType,
         [ConstantC (ConstantInt{ constantIntValue = idx })] -> return idx
         other -> trace ("Value failure: " ++ show other) fail ""
     return $ IntToPtrExpr PtrT $ AddExpr (exprTOfInst inst) valueExpr (ILitExpr $ fromIntegral size * index)
-gepInstToExpr _ _ = fail ""
+gepInstToExpr _ = fail ""
 
-helperInstToExpr :: Info -> Instruction -> BuildExpr Expr
-helperInstToExpr info inst@CallInst{ callFunction = funcValue,
-                                     callArguments = funcArgs } = case valueContent funcValue of
-    ExternalFunctionC (ExternalFunction{ externalFunctionName = funcId })
-        | "helper_" `L.isPrefixOf` identifierAsString funcId -> case funcArgs of
-            [(argVal, _)] -> do
-                argExpr <- valueToExpr info argVal
-                return $ CastHelperExpr (exprTOfInst inst) funcId argExpr
-            [(argVal1, _), (argVal2, _)] -> do
-                 argExpr1 <- valueToExpr info argVal1
-                 argExpr2 <- valueToExpr info argVal2
-                 return $ BinaryHelperExpr (exprTOfInst inst) funcId argExpr1 argExpr2
-            _ -> trace ("Bad funcArgs: " ++ (show funcArgs)) $ fail ""
-        | otherwise -> fail ""
-    _ -> fail ""
-helperInstToExpr _ _ = fail ""
+helperInstToExpr :: Instruction -> BuildExpr Expr
+helperInstToExpr inst@CallInst{ callFunction = funcValue,
+                                callArguments = funcArgs } = do
+    case valueContent funcValue of
+        ExternalFunctionC (ExternalFunction{ externalFunctionName = funcId })
+            | "helper_" `L.isPrefixOf` identifierAsString funcId -> case funcArgs of
+                [(argVal, _)] -> do
+                    argExpr <- valueToExpr argVal
+                    return $ CastHelperExpr (exprTOfInst inst) funcId argExpr
+                [(argVal1, _), (argVal2, _)] -> do
+                     argExpr1 <- valueToExpr argVal1
+                     argExpr2 <- valueToExpr argVal2
+                     return $ BinaryHelperExpr (exprTOfInst inst) funcId argExpr1 argExpr2
+                _ -> trace ("Bad funcArgs: " ++ (show funcArgs)) $ fail ""
+            | otherwise -> fail ""
+        _ -> fail ""
+helperInstToExpr _ = fail ""
 
 traceInst :: Instruction -> a -> a
 traceInst inst = trace ("Couldn't process inst " ++ (show inst))
@@ -335,52 +361,53 @@ maybeTraceInst inst = traceInst inst
 (<|||>) f1 f2 a b = f1 a b <|> f2 a b
 
 -- List of ways to process instructions and order in which to try them.
-instToExprs :: [Info -> Instruction -> BuildExpr Expr]
+instToExprs :: [Instruction -> BuildExpr Expr]
 instToExprs = [ binaryInstToExpr,
                 castInstToExpr,
                 gepInstToExpr,
                 helperInstToExpr ]
 
-memInstToExprs :: [Info -> (Instruction, Maybe MemlogOp) -> BuildExpr Expr]
+memInstToExprs :: [(Instruction, Maybe MemlogOp) -> BuildExpr Expr]
 memInstToExprs = [ loadInstToExpr ]
 
-storeUpdate :: Info -> (Instruction, Maybe MemlogOp) -> Maybe Info
-storeUpdate info (inst@StoreInst{ storeIsVolatile = False,
+type MaybeInfoM = MaybeT (State Info)
+
+storeUpdate :: (Instruction, Maybe MemlogOp) -> MaybeInfoM ()
+storeUpdate (inst@StoreInst{ storeIsVolatile = False,
                                   storeValue = val },
                   Just (AddrMemlogOp StoreOp addr)) = do
     -- trace ("STORE: " ++ show inst ++ " ===> " ++ show addr) $ return ()
-    value <- buildExprToMaybeExpr $ valueToExpr info val
-    return $ M.insert (MemLoc addr) value info
-storeUpdate _ _ = fail ""
+    value <- buildExprToMaybeExpr $ valueToExpr val
+    lift $ modify $ M.insert (MemLoc addr) value
+storeUpdate _ = fail ""
 
-exprUpdate :: Info -> (Instruction, Maybe MemlogOp) -> Maybe Info
-exprUpdate info instOp@(inst, _) = do
-    id <- instructionName inst
-    let builtExpr = (foldl1 (<|||>) instToExprs) info inst <|>
-                     loadInstToExpr info instOp
+exprUpdate :: (Instruction, Maybe MemlogOp) -> MaybeInfoM ()
+exprUpdate instOp@(inst, _) = do
+    id <- maybeToM $ instructionName inst
+    let builtExpr = (foldl1 (<||>) instToExprs) inst <|>
+                     loadInstToExpr instOp
     expr <- buildExprToMaybeExpr builtExpr
     -- traceShow (id, expr) $ return ()
-    return $ M.insert (IdLoc id) (repeatf 5 simplify expr) info
+    lift $ modify $ M.insert (IdLoc id) (repeatf 5 simplify expr)
     where repeatf 0 f x = trace "repeatf overflow, bailing" x
           repeatf n f x
               | x == f x = x
               | otherwise = repeatf (n - 1) f $ f x 
 
 -- Ignore alloca and ret instructions
-nullUpdate :: Info -> (Instruction, Maybe MemlogOp) -> Maybe Info
-nullUpdate info (AllocaInst{}, _) = return info
-nullUpdate info (RetInst{}, _) = return info
-nullUpdate _ _ = fail ""
+nullUpdate :: (Instruction, Maybe MemlogOp) -> MaybeInfoM ()
+nullUpdate (AllocaInst{}, _) = return ()
+nullUpdate (RetInst{}, _) = return ()
+nullUpdate _ = fail ""
 
-infoUpdaters :: [Info -> (Instruction, Maybe MemlogOp) -> Maybe Info]
+infoUpdaters :: [(Instruction, Maybe MemlogOp) -> MaybeInfoM ()]
 infoUpdaters = [ exprUpdate, storeUpdate, nullUpdate ]
 
-updateInfo :: Info -> (Instruction, Maybe MemlogOp) -> Info
-updateInfo info instOp@(inst, _)
-    = fromMaybe (maybeTraceInst inst info) (foldl1 (<|||>) infoUpdaters info instOp)
+updateInfo :: (Instruction, Maybe MemlogOp) -> State Info ()
+updateInfo instOp@(inst, _) = void $ runMaybeT $ foldl1 (<||>) infoUpdaters instOp
 
 runBlock :: Info -> MemlogMap -> BasicBlock -> Info
-runBlock info memlogMap block = foldl updateInfo info instOpList
+runBlock info memlogMap block = execState (mapM_ updateInfo instOpList) info
     where instOpList = M.findWithDefault (error "Couldn't find basic block instruction list") block memlogMap
 
 deriving instance Show Constant
@@ -527,9 +554,9 @@ showAssociated theMap = L.intercalate "\n\n" $ map showBlock $ M.toList theMap
 
 main :: IO ()
 main = do
-    let mainName = "tcg-llvm-tb-1243-400460-main"
     (Right theMod) <- parseLLVMFile defaultParserOptions "/tmp/llvm-mod.bc"
     funcNameList <- lines <$> readFile "/tmp/llvm-functions.log"
+    let mainName = head $ filter (L.isInfixOf "main") funcNameList
     let findFunc name = fromMaybe (error $ "Couldn't find function " ++ name) $ findFunctionByName theMod name
     let funcList = map findFunc funcNameList
     memlogBytes <- B.readFile "/tmp/llvm-memlog.log"

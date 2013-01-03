@@ -417,7 +417,7 @@ instToExprs = [ binaryInstToExpr,
 memInstToExprs :: [(Instruction, Maybe MemlogOp) -> BuildExpr Expr]
 memInstToExprs = [ loadInstToExpr ]
 
-type MaybeInfoM = MaybeT (Symbolic)
+type MaybeSymb = MaybeT (Symbolic)
 
 makeValueContentRelevant :: ValueContent -> Symbolic ()
 makeValueContentRelevant (InstructionC inst) =
@@ -429,7 +429,7 @@ makeValueContentRelevant _ = return ()
 makeValueRelevant :: Value -> Symbolic ()
 makeValueRelevant = makeValueContentRelevant . valueContent
 
-storeUpdate :: (Instruction, Maybe MemlogOp) -> MaybeInfoM ()
+storeUpdate :: (Instruction, Maybe MemlogOp) -> MaybeSymb ()
 storeUpdate (inst@StoreInst{ storeIsVolatile = False,
                                   storeValue = val },
                   Just (AddrMemlogOp StoreOp addr)) = do
@@ -440,7 +440,7 @@ storeUpdate (inst@StoreInst{ storeIsVolatile = False,
     lift $ makeValueRelevant val
 storeUpdate _ = fail ""
 
-exprUpdate :: (Instruction, Maybe MemlogOp) -> MaybeInfoM ()
+exprUpdate :: (Instruction, Maybe MemlogOp) -> MaybeSymb ()
 exprUpdate instOp@(inst, _) = do
     id <- maybeToM $ instructionName inst
     let builtExpr = (foldl1 (<||>) instToExprs) inst <|>
@@ -453,14 +453,30 @@ exprUpdate instOp@(inst, _) = do
               | x == f x = x
               | otherwise = repeatf (n - 1) f $ f x 
 
--- Ignore alloca and ret instructions
-nullUpdate :: (Instruction, Maybe MemlogOp) -> MaybeInfoM ()
+-- Ignore alloca instructions
+nullUpdate :: (Instruction, Maybe MemlogOp) -> MaybeSymb ()
 nullUpdate (AllocaInst{}, _) = return ()
-nullUpdate (RetInst{ retInstValue = Just val }, _) = lift $ makeValueRelevant val
 nullUpdate _ = fail ""
 
-infoUpdaters :: [(Instruction, Maybe MemlogOp) -> MaybeInfoM ()]
-infoUpdaters = [ exprUpdate, storeUpdate, nullUpdate ]
+controlFlowUpdate :: (Instruction, Maybe MemlogOp) -> MaybeSymb ()
+controlFlowUpdate (RetInst{ retInstValue = Just val }, _) = do
+    lift $ makeValueRelevant val
+    lift $ putNextBlock $ Nothing
+controlFlowUpdate (UnconditionalBranchInst{ unconditionalBranchTarget = target }, _)
+    = lift $ putNextBlock $ Just target
+controlFlowUpdate (BranchInst{ branchTrueTarget = trueTarget,
+                               branchFalseTarget = falseTarget,
+                               branchCondition = cond },
+                   Just (BranchOp idx)) = do
+    lift $ makeValueRelevant $ cond
+    case idx of
+        0 -> lift $ putNextBlock $ Just trueTarget
+        1 -> lift $ putNextBlock $ Just falseTarget
+        _ -> error "Invalid branch index"
+controlFlowUpdate _ = fail ""
+
+infoUpdaters :: [(Instruction, Maybe MemlogOp) -> MaybeSymb ()]
+infoUpdaters = [ exprUpdate, storeUpdate, controlFlowUpdate, nullUpdate ]
 
 updateInfo :: (Instruction, Maybe MemlogOp) -> Symbolic ()
 updateInfo instOp@(inst, _) = void $ runMaybeT $ foldl1 (<||>) infoUpdaters instOp
@@ -493,9 +509,6 @@ showInfo = unlines . map showEach . filter doShow . M.toList
           doShowExpr (ILitExpr 0) = False
           doShowExpr (IrrelevantExpr) = False
           doShowExpr _ = True
-
--- data MemlogOp = LoadOp Integer | StoreOp Integer | CondBranchOp Integer
---     deriving (Eq, Ord, Show)
 
 data MemlogOp = AddrMemlogOp AddrOp AddrEntry | BranchOp Word32 | SelectOp Bool
     deriving (Eq, Ord, Show)

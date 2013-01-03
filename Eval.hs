@@ -26,6 +26,29 @@ type UInt = Word64
 
 data Loc = IdLoc Identifier | MemLoc AddrEntry
     deriving (Eq, Ord, Show)
+
+class Pretty a where
+    pretty :: a -> String
+
+instance Pretty AddrEntry where
+    pretty AddrEntry{ addrType = MAddr, addrVal = val }
+        = printf "0x%08x" val
+    pretty AddrEntry{ addrType = GReg, addrVal = reg } = case reg of
+        0 -> "EAX"
+        1 -> "ECX"
+        2 -> "EDX"
+        3 -> "EBX"
+        4 -> "ESP"
+        5 -> "EBP"
+        6 -> "ESI"
+        7 -> "EDI"
+        _ -> "Reg" ++ show reg
+    pretty addr = show addr
+
+instance Pretty Loc where
+    pretty (IdLoc id) = show id
+    pretty (MemLoc addr) = pretty addr
+
 data ExprT = VoidT | PtrT | Int8T | Int32T | Int64T | FloatT | DoubleT
     deriving (Eq, Ord, Show)
 data Expr =
@@ -73,9 +96,9 @@ instance Show Expr where
     show (AndExpr _ e1 e2) = printf "(%s & %s)" (show e1) (show e2)
     show (OrExpr _ e1 e2) = printf "(%s | %s)" (show e1) (show e2)
     show (XorExpr _ e1 e2) = printf "(%s ^ %s)" (show e1) (show e2)
-    show (TruncExpr _ e) = printf "Trunc(%s)" (show e)
-    show (ZExtExpr _ e) = printf "ZExt(%s)" (show e)
-    show (SExtExpr _ e) = printf "SExt(%s)" (show e)
+    show (TruncExpr _ e) = printf "%s" (show e)
+    show (ZExtExpr _ e) = printf "%s" (show e)
+    show (SExtExpr _ e) = printf "%s" (show e)
     show (FPTruncExpr _ e) = printf "FPTrunc(%s)" (show e)
     show (FPExtExpr _ e) = printf "FPExt(%s)" (show e)
     show (FPToSIExpr _ e) = printf "FPToSI(%s)" (show e)
@@ -85,17 +108,7 @@ instance Show Expr where
     show (PtrToIntExpr _ e) = printf "PtrToInt(%s)" (show e)
     show (IntToPtrExpr _ e) = printf "IntToPtr(%s)" (show e)
     show (BitcastExpr _ e) = printf "Bitcast(%s)" (show e)
-    show (LoadExpr _ AddrEntry{ addrType = GReg, addrVal = reg }) = case reg of
-        0 -> "EAX"
-        1 -> "ECX"
-        2 -> "EDX"
-        3 -> "EBX"
-        4 -> "ESP"
-        5 -> "EBP"
-        6 -> "ESI"
-        7 -> "EDI"
-        _ -> "Reg" ++ show reg
-    show (LoadExpr _ addr) = printf "*%s" (show addr)
+    show (LoadExpr _ addr) = printf "*%s" (pretty addr)
     show (BinaryHelperExpr _ id e1 e2) = printf "%s(%s, %s)" (show id) (show e1) (show e2)
     show (CastHelperExpr _ id e) = printf "%s(%s)" (show id) (show e)
     show (ILitExpr i) = show i

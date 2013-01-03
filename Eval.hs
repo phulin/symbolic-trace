@@ -176,8 +176,13 @@ typeToExprT _ = VoidT
 exprTOfInst :: Instruction -> ExprT
 exprTOfInst = typeToExprT . instructionType
 
+data LocInfo = LocInfo{
+    locExpr :: Expr,
+    locRelevant :: Bool
+} deriving (Eq, Ord, Show)
+
 -- Representation of our [partial] knowledge of machine state.
-type Info = M.Map Loc Expr
+type Info = M.Map Loc LocInfo
 data SymbolicState = SymbolicState {
         symbolicInfo :: Info,
         symbolicNextBlock :: Maybe BasicBlock
@@ -194,18 +199,30 @@ putNextBlock :: Maybe BasicBlock -> Symbolic ()
 putNextBlock maybeBlock = modify (\s -> s{ symbolicNextBlock = maybeBlock })
 
 infoInsert :: Loc -> Expr -> Symbolic ()
-infoInsert key value = do
-    SymbolicState{ symbolicInfo = info } <- get
-    putInfo $ M.insert key value info
-infoFind :: Expr -> Loc -> Symbolic Expr
-infoFind def key = M.findWithDefault def key <$> getInfo
+infoInsert key expr = do
+    info <- getInfo
+    putInfo $ M.insert key locInfo info
+    where locInfo = LocInfo{ locExpr = expr, locRelevant = False }
+makeRelevant :: Loc -> Symbolic ()
+makeRelevant loc = do
+    info <- getInfo
+    putInfo $ M.adjust (\li -> li{ locRelevant = True }) loc info
+exprFindInfo :: Expr -> Loc -> Symbolic Expr
+exprFindInfo def key = locExpr <$> M.findWithDefault defLocInfo key <$> getInfo
+    where defLocInfo = LocInfo { locExpr = def, locRelevant = undefined }
+isRelevant :: Loc -> Symbolic Bool
+isRelevant loc = do
+    info <- getInfo
+    case M.lookup loc info of
+        Nothing -> return False
+        Just locInfo -> return $ locRelevant locInfo
 
 noSymbolicState :: SymbolicState
 noSymbolicState = SymbolicState{ symbolicInfo = M.empty,
                                  symbolicNextBlock = Nothing }
 
 valueAt :: Loc -> Symbolic Expr
-valueAt loc = infoFind (InputExpr Int64T loc) loc
+valueAt loc = exprFindInfo (InputExpr Int64T loc) loc
 
 data BuildExprM a
     = Irrelevant
@@ -330,16 +347,14 @@ castInstToExpr inst = do
     value <- valueToExpr $ castedValue inst
     return $ exprConstructor (exprTOfInst inst) value
 
--- TODO: clean up
 loadInstToExpr :: (Instruction, Maybe MemlogOp) -> BuildExpr Expr
 loadInstToExpr (inst@LoadInst{ loadAddress = addr },
                 Just (AddrMemlogOp LoadOp addrEntry)) = do
     info <- lift getInfo
     case addrFlag addrEntry of
         IrrelevantFlag -> irrelevant -- Ignore parts of CPU state that Panda doesn't track.
-        _ -> maybeToM (M.lookup (MemLoc addrEntry) info) <|>
+        _ -> (locExpr <$> maybeToM (M.lookup (MemLoc addrEntry) info)) <|>
              liftM (LoadExpr $ exprTOfInst inst) (return addrEntry)
-      -- liftM (LoadExpr $ exprTOfInst inst) (valueToExpr info addr)
 loadInstToExpr _ = fail ""
 
 gepInstToExpr :: Instruction -> BuildExpr Expr
@@ -404,6 +419,16 @@ memInstToExprs = [ loadInstToExpr ]
 
 type MaybeInfoM = MaybeT (Symbolic)
 
+makeValueContentRelevant :: ValueContent -> Symbolic ()
+makeValueContentRelevant (InstructionC inst) =
+    case instructionName inst of
+        Just id -> makeRelevant $ IdLoc id
+        _ -> return ()
+makeValueContentRelevant _ = return ()
+
+makeValueRelevant :: Value -> Symbolic ()
+makeValueRelevant = makeValueContentRelevant . valueContent
+
 storeUpdate :: (Instruction, Maybe MemlogOp) -> MaybeInfoM ()
 storeUpdate (inst@StoreInst{ storeIsVolatile = False,
                                   storeValue = val },
@@ -411,6 +436,8 @@ storeUpdate (inst@StoreInst{ storeIsVolatile = False,
     -- trace ("STORE: " ++ show inst ++ " ===> " ++ show addr) $ return ()
     value <- buildExprToMaybeExpr $ valueToExpr val
     lift $ infoInsert (MemLoc addr) value
+    lift $ makeRelevant $ MemLoc addr
+    lift $ makeValueRelevant val
 storeUpdate _ = fail ""
 
 exprUpdate :: (Instruction, Maybe MemlogOp) -> MaybeInfoM ()
@@ -429,7 +456,7 @@ exprUpdate instOp@(inst, _) = do
 -- Ignore alloca and ret instructions
 nullUpdate :: (Instruction, Maybe MemlogOp) -> MaybeInfoM ()
 nullUpdate (AllocaInst{}, _) = return ()
-nullUpdate (RetInst{}, _) = return ()
+nullUpdate (RetInst{ retInstValue = Just val }, _) = lift $ makeValueRelevant val
 nullUpdate _ = fail ""
 
 infoUpdaters :: [(Instruction, Maybe MemlogOp) -> MaybeInfoM ()]
@@ -460,10 +487,12 @@ deriving instance Show ValueContent
 
 showInfo :: Info -> String
 showInfo = unlines . map showEach . filter doShow . M.toList
-    where showEach (key, val) = show key ++ " -> " ++ show val
-          doShow (_, ILitExpr 0) = False
-          doShow (_, IrrelevantExpr) = False
-          doShow _ = True
+    where showEach (key, val) = pretty key ++ " -> " ++ show (locExpr val)
+          doShow (_, LocInfo{ locRelevant = False }) = False
+          doShow (_, LocInfo{ locExpr = expr }) = doShowExpr expr
+          doShowExpr (ILitExpr 0) = False
+          doShowExpr (IrrelevantExpr) = False
+          doShowExpr _ = True
 
 -- data MemlogOp = LoadOp Integer | StoreOp Integer | CondBranchOp Integer
 --     deriving (Eq, Ord, Show)

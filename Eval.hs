@@ -258,7 +258,7 @@ buildExprToMaybeExpr = MaybeT . fmap buildExprMToMaybeExpr . runBuildExprT
 
 buildExprMToMaybeExpr :: BuildExprM Expr -> Maybe Expr
 buildExprMToMaybeExpr (JustI e) = Just e
-buildExprMToMaybeExpr (ErrorI s) = trace s Nothing
+buildExprMToMaybeExpr (ErrorI s) = Nothing
 buildExprMToMaybeExpr Irrelevant = Just IrrelevantExpr
 
 maybeToM :: (Monad m) => Maybe a -> m a

@@ -506,7 +506,6 @@ showInfo = unlines . map showEach . filter doShow . M.toList
     where showEach (key, val) = pretty key ++ " -> " ++ show (locExpr val)
           doShow (_, LocInfo{ locRelevant = False }) = False
           doShow (_, LocInfo{ locExpr = expr }) = doShowExpr expr
-          doShowExpr (ILitExpr 0) = False
           doShowExpr (IrrelevantExpr) = False
           doShowExpr _ = True
 

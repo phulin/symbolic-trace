@@ -6,14 +6,12 @@ import Data.LLVM.Types
 import LLVM.Parse
 import qualified Data.List as L
 import qualified Data.Map as M
+import qualified Data.Set as S
 import qualified Data.Bits as Bits
 import Data.Word
 import Control.Applicative
 import Data.Maybe
 import Debug.Trace
--- import Text.Parsec(Parsec, endBy, string)
--- import Text.Parsec.String(parseFromFile)
--- import Text.Parsec.Extra(integer, eol)
 import Data.Binary.Get(Get, runGet, getWord32host, getWord64host, skip)
 import qualified Data.ByteString.Lazy as B
 import Control.Monad
@@ -24,8 +22,12 @@ import Text.Printf(printf)
 
 type UInt = Word64
 
-data Loc = IdLoc Identifier | MemLoc AddrEntry
-    deriving (Eq, Ord, Show)
+data Loc = IdLoc Function Identifier | MemLoc AddrEntry
+    deriving (Eq, Ord)
+
+instance Show Loc where
+    show (IdLoc f id) = printf "IdLoc %s %s" (show $ functionName f) (show id)
+    show (MemLoc addr) = printf "MemLoc (%s)" (show addr)
 
 class Pretty a where
     pretty :: a -> String
@@ -46,7 +48,7 @@ instance Pretty AddrEntry where
     pretty addr = show addr
 
 instance Pretty Loc where
-    pretty (IdLoc id) = show id
+    pretty (IdLoc f id) = printf "%s: %s" (show $ functionName f) (show id)
     pretty (MemLoc addr) = pretty addr
 
 data ExprT = VoidT | PtrT | Int8T | Int32T | Int64T | FloatT | DoubleT
@@ -185,7 +187,8 @@ data LocInfo = LocInfo{
 type Info = M.Map Loc LocInfo
 data SymbolicState = SymbolicState {
         symbolicInfo :: Info,
-        symbolicNextBlock :: Maybe BasicBlock
+        symbolicNextBlock :: Maybe BasicBlock,
+        symbolicFunction :: Function
     } deriving (Eq, Ord, Show)
 type Symbolic = State SymbolicState
 
@@ -193,6 +196,8 @@ getInfo :: Symbolic Info
 getInfo = symbolicInfo <$> get
 getNextBlock :: Symbolic (Maybe BasicBlock)
 getNextBlock = symbolicNextBlock <$> get
+getCurrentFunction :: Symbolic Function
+getCurrentFunction = symbolicFunction <$> get
 putInfo :: Info -> Symbolic ()
 putInfo info = modify (\s -> s{ symbolicInfo = info })
 putNextBlock :: Maybe BasicBlock -> Symbolic ()
@@ -219,7 +224,8 @@ isRelevant loc = do
 
 noSymbolicState :: SymbolicState
 noSymbolicState = SymbolicState{ symbolicInfo = M.empty,
-                                 symbolicNextBlock = Nothing }
+                                 symbolicNextBlock = Nothing,
+                                 symbolicFunction = error "No function." }
 
 valueAt :: Loc -> Symbolic Expr
 valueAt loc = exprFindInfo (InputExpr Int64T loc) loc
@@ -287,7 +293,8 @@ instructionToExpr inst = do
     name <- case instructionName inst of
         Just n -> return n
         Nothing -> fail "No name for inst"
-    value <- lift $ valueAt (IdLoc name)
+    func <- lift getCurrentFunction
+    value <- lift $ valueAt (IdLoc func name)
     case value of
         IrrelevantExpr -> irrelevant
         e -> return e
@@ -298,8 +305,9 @@ valueContentToExpr (ConstantC (ConstantInt _ _ value)) = return $ ILitExpr value
 valueContentToExpr (ConstantC (ConstantValue{ constantInstruction = inst })) = instructionToExpr inst
 valueContentToExpr (InstructionC inst) = instructionToExpr inst
 valueContentToExpr (ArgumentC (Argument{ argumentName = name,
-                                         argumentType = argType }))
-    = return $ InputExpr (typeToExprT argType) (IdLoc name)
+                                         argumentType = argType })) = do
+    func <- lift getCurrentFunction
+    return $ InputExpr (typeToExprT argType) (IdLoc func name)
 valueContentToExpr val = trace ("Couldn't find expr for " ++ show val) fail ""
 
 valueToExpr :: Value -> BuildExpr Expr
@@ -420,9 +428,10 @@ memInstToExprs = [ loadInstToExpr ]
 type MaybeSymb = MaybeT (Symbolic)
 
 makeValueContentRelevant :: ValueContent -> Symbolic ()
-makeValueContentRelevant (InstructionC inst) =
+makeValueContentRelevant (InstructionC inst) = do
+    func <- getCurrentFunction
     case instructionName inst of
-        Just id -> makeRelevant $ IdLoc id
+        Just id -> makeRelevant $ IdLoc func id
         _ -> return ()
 makeValueContentRelevant _ = return ()
 
@@ -443,11 +452,12 @@ storeUpdate _ = fail ""
 exprUpdate :: (Instruction, Maybe MemlogOp) -> MaybeSymb ()
 exprUpdate instOp@(inst, _) = do
     id <- maybeToM $ instructionName inst
+    func <- lift getCurrentFunction
     let builtExpr = (foldl1 (<||>) instToExprs) inst <|>
                      loadInstToExpr instOp
     expr <- buildExprToMaybeExpr builtExpr
     -- traceShow (id, expr) $ return ()
-    lift $ infoInsert (IdLoc id) (repeatf 5 simplify expr)
+    lift $ infoInsert (IdLoc func id) (repeatf 5 simplify expr)
     where repeatf 0 f x = trace "repeatf overflow, bailing" x
           repeatf n f x
               | x == f x = x
@@ -488,11 +498,21 @@ runBlock memlogMap block = do
     case nextBlock of
         Just block -> runBlock memlogMap block
         Nothing -> return ()
-    where instOpList = M.findWithDefault (error "Couldn't find basic block instruction list") block memlogMap
+    where instOpList = M.findWithDefault (error $ "Couldn't find basic block instruction list for " ++ show (functionName $ basicBlockFunction block) ++ show (basicBlockName block)) block memlogMap
 
-runFunction :: MemlogMap -> Function -> Info
-runFunction memlogMap f = symbolicInfo $ execState computation noSymbolicState
+isMemLoc :: Loc -> Bool
+isMemLoc MemLoc{} = True
+isMemLoc _ = False
+
+runFunction :: MemlogMap -> Info -> Function -> Info
+runFunction memlogMap initialInfo f = symbolicInfo state
     where computation = runBlock memlogMap $ head $ functionBody f
+          state = execState computation initialState
+          initialState = noSymbolicState{ symbolicInfo = initialInfo,
+                                          symbolicFunction = f }
+
+runFunctions :: MemlogMap -> [Function] -> Info
+runFunctions memlogMap fs = foldl (runFunction memlogMap) M.empty fs
 
 deriving instance Show Constant
 deriving instance Show ExternalValue
@@ -559,7 +579,7 @@ getAddrFlag = do
 
 type MemlogMap = M.Map BasicBlock [(Instruction, Maybe MemlogOp)]
 type OpContext = State [MemlogOp]
-type MemlogContext = StateT (MemlogMap, String) OpContext
+type MemlogContext = StateT (MemlogMap, S.Set String) OpContext
 -- Track next basic block to execute
 type FuncOpContext = StateT (Maybe BasicBlock) OpContext
 memlogPop :: FuncOpContext (Maybe MemlogOp)
@@ -585,9 +605,9 @@ associateMemlogWithFunc func = addBlock $ head $ functionBody func
           addBlock block = do
               ops <- lift get
               (associated, nextBlock) <- lift $ runStateT (associateBasicBlock block) Nothing
-              (map, funcName) <- get
-              if funcName == (identifierAsString $ functionName func)
-                  then put (M.insert block associated map, funcName)
+              (map, funcNames) <- get
+              if S.member (identifierAsString $ functionName func) funcNames
+                  then put (M.insert block associated map, funcNames)
                   else return ()
               case nextBlock of
                   Just nextBlock' -> addBlock nextBlock'
@@ -624,15 +644,25 @@ associateInst inst@UnconditionalBranchInst{ unconditionalBranchTarget = target} 
 associateInst RetInst{} = put Nothing >> return Nothing
 associateInst _ = return Nothing
 
-associateFuncs :: [MemlogOp] -> String -> [Function] -> MemlogMap
-associateFuncs ops funcName funcs = map
+associateFuncs :: [MemlogOp] -> S.Set String -> [Function] -> MemlogMap
+associateFuncs ops funcNames funcs = map
     where ((map, _), leftoverOps) = runState inner ops
-          inner = execStateT (mapM_ associateMemlogWithFunc funcs) (M.empty, funcName)
+          inner = execStateT (mapM_ associateMemlogWithFunc funcs) (M.empty, funcNames)
 
 showAssociated :: MemlogMap -> String
 showAssociated theMap = L.intercalate "\n\n" $ map showBlock $ M.toList theMap
     where showBlock (block, list) = show (basicBlockName block) ++ ":\n" ++ (L.intercalate "\n" $ map showInstOp list)
           showInstOp (inst, maybeOp) = show inst ++ " => " ++ show maybeOp
+
+takeUntil :: (a -> Bool) -> [a] -> [a]
+takeUntil p (x : xs)
+    | p x = []
+    | otherwise = x : (takeUntil p xs)
+takeUntil _ [] = []
+
+interesting :: [String] -> [String]
+interesting fs = takeUntil boring $ dropWhile boring fs
+    where boring = not . L.isInfixOf "main"
 
 main :: IO ()
 main = do
@@ -641,8 +671,11 @@ main = do
     let mainName = head $ filter (L.isInfixOf "main") funcNameList
     let findFunc name = fromMaybe (error $ "Couldn't find function " ++ name) $ findFunctionByName theMod name
     let funcList = map findFunc funcNameList
+    let interestingNames = interesting funcNameList
+    let interestingNameSet = S.fromList interestingNames
+    let interestingFuncs = map findFunc interestingNames
     memlogBytes <- B.readFile "/tmp/llvm-memlog.log"
     let memlog = runGet (many getMemlogEntry) memlogBytes
-    let associated = associateFuncs memlog mainName funcList
+    let associated = associateFuncs memlog interestingNameSet funcList
     -- putStrLn $ showAssociated associated
-    putStrLn $ showInfo $ runFunction associated $ findFunc mainName
+    putStrLn $ showInfo $ runFunctions associated interestingFuncs

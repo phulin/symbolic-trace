@@ -18,6 +18,7 @@ import qualified Data.Set as S
 import Instances
 import Pretty
 
+-- Haskell version of C dynamic log structs
 data MemlogOp = AddrMemlogOp AddrOp AddrEntry | BranchOp Word32 | SelectOp Bool
     deriving (Eq, Ord, Show)
 data AddrOp = LoadOp | StoreOp | BranchAddrOp | SelectAddrOp
@@ -85,9 +86,14 @@ getAddrFlag = do
         f -> error ("Parse error on flag " ++ show f)
 
 type MemlogMap = M.Map BasicBlock [(Instruction, Maybe MemlogOp)]
+
+-- Monads for doing the association.
+
+-- We always keep track of the MemlogOps which are left, in the inner OpContext monad.
 type OpContext = State [MemlogOp]
+-- Across basic blocks, we keep track of the MemlogOps for each block.
 type MemlogContext = StateT (MemlogMap, S.Set String) OpContext
--- Track next basic block to execute
+-- Inside a basic block, watch out to see if we run into a control-flow instruction.
 type FuncOpContext = StateT (Maybe BasicBlock) OpContext
 memlogPop :: FuncOpContext (Maybe MemlogOp)
 memlogPop = do
@@ -106,6 +112,31 @@ memlogPopWithError errMsg = do
 memlogPopWithErrorInst :: Instruction -> FuncOpContext MemlogOp
 memlogPopWithErrorInst inst = memlogPopWithError $ "Failed on block " ++ (show $ instructionBasicBlock inst)
 
+associateBasicBlock :: BasicBlock -> FuncOpContext [(Instruction, Maybe MemlogOp)]
+associateBasicBlock = mapM associateInstWithCopy . basicBlockInstructions
+    where associateInstWithCopy inst = do
+              maybeOp <- associateInst inst
+              return (inst, maybeOp)
+
+associateInst :: Instruction -> FuncOpContext (Maybe MemlogOp)
+associateInst inst@LoadInst{} = liftM Just $ memlogPopWithErrorInst inst
+associateInst inst@StoreInst{ storeIsVolatile = volatile }
+    = if volatile
+        then return Nothing
+        else liftM Just $ memlogPopWithErrorInst inst
+associateInst inst@BranchInst{} = do
+    op <- memlogPopWithErrorInst inst
+    case op of
+        BranchOp 0 -> put $ Just $ branchTrueTarget inst
+        BranchOp 1 -> put $ Just $ branchFalseTarget inst
+        _ -> return ()
+    return $ Just op
+associateInst inst@UnconditionalBranchInst{ unconditionalBranchTarget = target} = do
+    put $ Just target
+    liftM Just $ memlogPopWithErrorInst inst
+associateInst RetInst{} = put Nothing >> return Nothing
+associateInst _ = return Nothing
+
 associateMemlogWithFunc :: Function -> MemlogContext ()
 associateMemlogWithFunc func = addBlock $ head $ functionBody func
     where addBlock :: BasicBlock -> MemlogContext ()
@@ -120,37 +151,6 @@ associateMemlogWithFunc func = addBlock $ head $ functionBody func
                   Just nextBlock' -> addBlock nextBlock'
                   Nothing -> return ()
 
-associateBasicBlock :: BasicBlock -> FuncOpContext [(Instruction, Maybe MemlogOp)]
-associateBasicBlock = mapM associateInstWithCopy . basicBlockInstructions
-    where associateInstWithCopy inst = do
-              maybeOp <- associateInst inst
-              -- case maybeOp of
-              --   Just _ -> trace (show (identifierAsString $ functionName $ basicBlockFunction $ fromJust $ instructionBasicBlock inst) ++ ": " ++ show inst ++ "=> " ++  show maybeOp) $ return ()
-              --   _ -> return ()
-              return (inst, maybeOp)
-
-associateInst :: Instruction -> FuncOpContext (Maybe MemlogOp)
-associateInst inst@LoadInst{} = liftM Just $ memlogPopWithErrorInst inst
-associateInst inst@StoreInst{ storeIsVolatile = volatile }
-    = if volatile
-        then return Nothing
-        else liftM Just $ memlogPopWithErrorInst inst
-associateInst inst@BranchInst{} = do
-    op <- memlogPopWithErrorInst inst
-    case op of
-        BranchOp branchTaken ->
-            if branchTaken == 0
-                then put $ Just $ branchTrueTarget inst
-                else put $ Just $ branchFalseTarget inst
-        _ -> return ()
-    return $ Just op
-associateInst inst@UnconditionalBranchInst{ unconditionalBranchTarget = target} = do
-    put $ Just target
-    liftM Just $ memlogPopWithErrorInst inst
-
-associateInst RetInst{} = put Nothing >> return Nothing
-associateInst _ = return Nothing
-
 associateFuncs :: [MemlogOp] -> S.Set String -> [Function] -> MemlogMap
 associateFuncs ops funcNames funcs = map
     where ((map, _), leftoverOps) = runState inner ops
@@ -160,4 +160,3 @@ showAssociated :: MemlogMap -> String
 showAssociated theMap = L.intercalate "\n\n" $ map showBlock $ M.toList theMap
     where showBlock (block, list) = show (basicBlockName block) ++ ":\n" ++ (L.intercalate "\n" $ map showInstOp list)
           showInstOp (inst, maybeOp) = show inst ++ " => " ++ show maybeOp
-

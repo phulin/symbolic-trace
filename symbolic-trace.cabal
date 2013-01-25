@@ -1,0 +1,11 @@
+Name:                symbolic-trace
+Version:             0.0
+Synopsis:            Symbolic execution of traces for program understanding
+Description:         Symbolic execution of traces for program understanding
+Author:              Patrick Hulin
+Maintainer:          Patrick Hulin <phulin@mit.edu>
+Build-Depends:       base, transformers, bytestring, binary, containers, llvm-data-interop, llvm-base-types
+
+Build-Type:			 Simple
+Executable:          Eval
+Main-is:             Eval.hs

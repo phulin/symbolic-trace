@@ -12,171 +12,15 @@ import Data.Word
 import Control.Applicative
 import Data.Maybe
 import Debug.Trace
-import Data.Binary.Get(Get, runGet, getWord32host, getWord64host, skip)
-import qualified Data.ByteString.Lazy as B
 import Control.Monad
 import Control.Monad.Trans.State.Lazy
 import Control.Monad.Trans.Class(lift, MonadTrans)
 import Control.Monad.Trans.Maybe
 import Text.Printf(printf)
 
-type UInt = Word64
-
-data Loc = IdLoc Function Identifier | MemLoc AddrEntry
-    deriving (Eq, Ord)
-
-instance Show Loc where
-    show (IdLoc f id) = printf "IdLoc %s %s" (show $ functionName f) (show id)
-    show (MemLoc addr) = printf "MemLoc (%s)" (show addr)
-
-class Pretty a where
-    pretty :: a -> String
-
-instance Pretty AddrEntry where
-    pretty AddrEntry{ addrType = MAddr, addrVal = val }
-        = printf "0x%08x" val
-    pretty AddrEntry{ addrType = GReg, addrVal = reg } = case reg of
-        0 -> "EAX"
-        1 -> "ECX"
-        2 -> "EDX"
-        3 -> "EBX"
-        4 -> "ESP"
-        5 -> "EBP"
-        6 -> "ESI"
-        7 -> "EDI"
-        _ -> "Reg" ++ show reg
-    pretty addr = show addr
-
-instance Pretty Loc where
-    pretty (IdLoc f id) = printf "%s: %s" (show $ functionName f) (show id)
-    pretty (MemLoc addr) = pretty addr
-
-data ExprT = VoidT | PtrT | Int8T | Int32T | Int64T | FloatT | DoubleT
-    deriving (Eq, Ord, Show)
-data Expr =
-    AddExpr ExprT Expr Expr |
-    SubExpr ExprT Expr Expr |
-    MulExpr ExprT Expr Expr |
-    DivExpr ExprT Expr Expr |
-    RemExpr ExprT Expr Expr |
-    ShlExpr ExprT Expr Expr |
-    LshrExpr ExprT Expr Expr |
-    AshrExpr ExprT Expr Expr |
-    AndExpr ExprT Expr Expr |
-    OrExpr ExprT Expr Expr |
-    XorExpr ExprT Expr Expr |
-    TruncExpr ExprT Expr |
-    ZExtExpr ExprT Expr |
-    SExtExpr ExprT Expr |
-    FPTruncExpr ExprT Expr |
-    FPExtExpr ExprT Expr |
-    FPToSIExpr ExprT Expr |
-    FPToUIExpr ExprT Expr |
-    SIToFPExpr ExprT Expr |
-    UIToFPExpr ExprT Expr |
-    PtrToIntExpr ExprT Expr |
-    IntToPtrExpr ExprT Expr |
-    BitcastExpr ExprT Expr |
-    LoadExpr ExprT AddrEntry |
-    BinaryHelperExpr ExprT Identifier Expr Expr | -- not witnessed
-    CastHelperExpr ExprT Identifier Expr |
-    ILitExpr Integer | -- takes any integer type
-    FLitExpr Double | -- takes any float type
-    InputExpr ExprT Loc |
-    IrrelevantExpr
-    deriving (Eq, Ord)
-
-instance Show Expr where
-    show (AddExpr _ e1 e2) = printf "(%s + %s)" (show e1) (show e2)
-    show (SubExpr _ e1 e2) = printf "(%s - %s)" (show e1) (show e2)
-    show (MulExpr _ e1 e2) = printf "(%s * %s)" (show e1) (show e2)
-    show (DivExpr _ e1 e2) = printf "(%s / %s)" (show e1) (show e2)
-    show (RemExpr _ e1 e2) = printf "(%s % %s)" (show e1) (show e2)
-    show (ShlExpr _ e1 e2) = printf "(%s << %s)" (show e1) (show e2)
-    show (LshrExpr _ e1 e2) = printf "(%s L>> %s)" (show e1) (show e2)
-    show (AshrExpr _ e1 e2) = printf "(%s A>> %s)" (show e1) (show e2)
-    show (AndExpr _ e1 e2) = printf "(%s & %s)" (show e1) (show e2)
-    show (OrExpr _ e1 e2) = printf "(%s | %s)" (show e1) (show e2)
-    show (XorExpr _ e1 e2) = printf "(%s ^ %s)" (show e1) (show e2)
-    show (TruncExpr _ e) = printf "%s" (show e)
-    show (ZExtExpr _ e) = printf "%s" (show e)
-    show (SExtExpr _ e) = printf "%s" (show e)
-    show (FPTruncExpr _ e) = printf "FPTrunc(%s)" (show e)
-    show (FPExtExpr _ e) = printf "FPExt(%s)" (show e)
-    show (FPToSIExpr _ e) = printf "FPToSI(%s)" (show e)
-    show (FPToUIExpr _ e) = printf "FPToUI(%s)" (show e)
-    show (SIToFPExpr _ e) = printf "SIToFP(%s)" (show e)
-    show (UIToFPExpr _ e) = printf "UIToFP(%s)" (show e)
-    show (PtrToIntExpr _ e) = printf "PtrToInt(%s)" (show e)
-    show (IntToPtrExpr _ e) = printf "IntToPtr(%s)" (show e)
-    show (BitcastExpr _ e) = printf "Bitcast(%s)" (show e)
-    show (LoadExpr _ addr) = printf "*%s" (pretty addr)
-    show (BinaryHelperExpr _ id e1 e2) = printf "%s(%s, %s)" (show id) (show e1) (show e2)
-    show (CastHelperExpr _ id e) = printf "%s(%s)" (show id) (show e)
-    show (ILitExpr i) = show i
-    show (FLitExpr f) = show f
-    show (InputExpr _ loc) = printf "(%s)" (show loc)
-    show (IrrelevantExpr) = "IRRELEVANT"
-
-bits :: ExprT -> Int
-bits Int8T = 8
-bits Int32T = 32
-bits Int64T = 64
-bits t = error $ "Unexpected argument to bits: " ++ show t
-
-simplify :: Expr -> Expr
-simplify (AddExpr t e1 (ILitExpr 0)) = simplify e1
-simplify (AddExpr t (ILitExpr 0) e2) = simplify e2
-simplify (AddExpr t e1 e2) = AddExpr t (simplify e1) (simplify e2)
-simplify (SubExpr t e1 e2) = SubExpr t (simplify e1) (simplify e2)
-simplify (MulExpr t e1 e2) = MulExpr t (simplify e1) (simplify e2)
-simplify (DivExpr t e1 e2) = DivExpr t (simplify e1) (simplify e2)
-simplify (RemExpr t e1 e2) = RemExpr t (simplify e1) (simplify e2)
-simplify (ShlExpr t e1 e2) = ShlExpr t (simplify e1) (simplify e2)
-simplify (LshrExpr t e1 e2) = LshrExpr t (simplify e1) (simplify e2)
-simplify (AshrExpr _ (ILitExpr 0) _) = ILitExpr 0
-simplify (AshrExpr t e1 e2) = AshrExpr t (simplify e1) (simplify e2)
-simplify (AndExpr t e1 e2) = AndExpr t (simplify e1) (simplify e2)
-simplify (OrExpr t e1 e2) = OrExpr t (simplify e1) (simplify e2)
-simplify (XorExpr t e1 e2) = XorExpr t (simplify e1) (simplify e2)
-simplify (TruncExpr _ (ZExtExpr _ e)) = simplify e
-simplify (TruncExpr _ (SExtExpr _ e)) = simplify e
-simplify expr@(TruncExpr t e@(ILitExpr int))
-    | int < 2 ^ bits t = e
-    | otherwise = expr
-simplify (TruncExpr t e) = TruncExpr t (simplify e)
-simplify (ZExtExpr t e@ILitExpr{}) = e
-simplify (ZExtExpr t e) = ZExtExpr t (simplify e)
-simplify (SExtExpr t e@ILitExpr{}) = e -- FIXME: add typing to lits
-simplify (SExtExpr t e) = SExtExpr t (simplify e)
-simplify (FPTruncExpr t e) = FPTruncExpr t (simplify e)
-simplify (FPExtExpr t e) = FPExtExpr t (simplify e)
-simplify (FPToSIExpr t e) = FPToSIExpr t (simplify e)
-simplify (FPToUIExpr t e) = FPToUIExpr t (simplify e)
-simplify (SIToFPExpr t e) = SIToFPExpr t (simplify e)
-simplify (UIToFPExpr t e) = UIToFPExpr t (simplify e)
-simplify (PtrToIntExpr t1 (IntToPtrExpr t2 e)) = simplify e
-simplify (IntToPtrExpr t1 (PtrToIntExpr Int64T e)) = simplify e
-simplify (PtrToIntExpr t e) = PtrToIntExpr t (simplify e)
-simplify (IntToPtrExpr t e) = IntToPtrExpr t (simplify e)
-simplify (BitcastExpr t e) = BitcastExpr t (simplify e)
--- simplify (LoadExpr t e) = LoadExpr t (simplify e)
-simplify (BinaryHelperExpr t id e1 e2) = BinaryHelperExpr t id (simplify e1) (simplify e2)
-simplify (CastHelperExpr t id e) = CastHelperExpr t id (simplify e)
-simplify e = e
-
--- Simple type system
-typeToExprT :: Type -> ExprT
-typeToExprT (TypeInteger 8) = Int8T
-typeToExprT (TypeInteger 32) = Int32T
-typeToExprT (TypeInteger 64) = Int32T
-typeToExprT (TypePointer _ _) = PtrT
-typeToExprT (TypeFloat) = FloatT
-typeToExprT (TypeDouble) = DoubleT
-typeToExprT _ = VoidT
-
-exprTOfInst :: Instruction -> ExprT
-exprTOfInst = typeToExprT . instructionType
+import Expr
+import Memlog
+import Pretty
 
 data LocInfo = LocInfo{
     locExpr :: Expr,
@@ -514,13 +358,6 @@ runFunction memlogMap initialInfo f = symbolicInfo state
 runFunctions :: MemlogMap -> [Function] -> Info
 runFunctions memlogMap fs = foldl (runFunction memlogMap) M.empty fs
 
-deriving instance Show Constant
-deriving instance Show ExternalValue
-deriving instance Show GlobalAlias
-deriving instance Show GlobalVariable
-deriving instance Show BasicBlock
-deriving instance Show ValueContent
-
 showInfo :: Info -> String
 showInfo = unlines . map showEach . filter doShow . M.toList
     where showEach (key, val) = pretty key ++ " -> " ++ show (locExpr val)
@@ -528,131 +365,6 @@ showInfo = unlines . map showEach . filter doShow . M.toList
           doShow (_, LocInfo{ locExpr = expr }) = doShowExpr expr
           doShowExpr (IrrelevantExpr) = False
           doShowExpr _ = True
-
-data MemlogOp = AddrMemlogOp AddrOp AddrEntry | BranchOp Word32 | SelectOp Bool
-    deriving (Eq, Ord, Show)
-data AddrOp = LoadOp | StoreOp | BranchAddrOp | SelectAddrOp
-    deriving (Eq, Ord, Show, Enum)
-data AddrEntry = AddrEntry { addrType :: AddrEntryType
-                           , addrVal :: Word64
-                           , addrOff :: Word32
-                           , addrFlag :: AddrFlag }
-    deriving (Eq, Ord, Show)
-data AddrEntryType = HAddr | MAddr | IAddr | LAddr | GReg | GSpec | Unk | Const | Ret
-    deriving (Eq, Ord, Show, Enum)
-data AddrFlag = IrrelevantFlag | NoFlag | ExceptionFlag | ReadlogFlag | FuncargFlag
-    deriving (Eq, Ord, Show)
-
-getMemlogEntry :: Get MemlogOp
-getMemlogEntry = do
-    entryType <- getWord64host
-    out <- case entryType of
-        0 -> AddrMemlogOp <$> getAddrOp <*> getAddrEntry
-        1 -> BranchOp <$> getWord32host <* skip 28
-        2 -> SelectOp <$> getBool <* skip 28
-    -- traceShow out $ return out
-    return out
-
-getBool :: Get Bool
-getBool = do
-    word32 <- getWord32host
-    return $ case word32 of
-        0 -> False
-        _ -> True
-
-getAddrOp :: Get AddrOp
-getAddrOp = (toEnum . fromIntegral) <$> getWord64host
-
-getAddrEntry :: Get AddrEntry
-getAddrEntry = AddrEntry <$> ((toEnum . fromIntegral) <$> getWord64host) <*> getWord64host <*> getWord32host <*> getAddrFlag
-
-getAddrFlag :: Get AddrFlag
-getAddrFlag = do
-    addrFlagType <- getWord32host
-    return $ case addrFlagType of
-        -1 -> IrrelevantFlag
-        0 -> NoFlag
-        1 -> ExceptionFlag
-        2 -> ReadlogFlag
-        3 -> FuncargFlag
-        f -> error ("Parse error on flag " ++ show f)
-
-type MemlogMap = M.Map BasicBlock [(Instruction, Maybe MemlogOp)]
-type OpContext = State [MemlogOp]
-type MemlogContext = StateT (MemlogMap, S.Set String) OpContext
--- Track next basic block to execute
-type FuncOpContext = StateT (Maybe BasicBlock) OpContext
-memlogPop :: FuncOpContext (Maybe MemlogOp)
-memlogPop = do
-    stream <- lift get
-    case stream of
-        op : ops -> lift (put ops) >> return (Just op)
-        [] -> return Nothing
-
-memlogPopWithError :: String -> FuncOpContext MemlogOp
-memlogPopWithError errMsg = do
-    maybeOp <- memlogPop
-    case maybeOp of
-        Just op -> return op
-        Nothing -> error errMsg
-
-memlogPopWithErrorInst :: Instruction -> FuncOpContext MemlogOp
-memlogPopWithErrorInst inst = memlogPopWithError $ "Failed on block " ++ (show $ instructionBasicBlock inst)
-
-associateMemlogWithFunc :: Function -> MemlogContext ()
-associateMemlogWithFunc func = addBlock $ head $ functionBody func
-    where addBlock :: BasicBlock -> MemlogContext ()
-          addBlock block = do
-              ops <- lift get
-              (associated, nextBlock) <- lift $ runStateT (associateBasicBlock block) Nothing
-              (map, funcNames) <- get
-              if S.member (identifierAsString $ functionName func) funcNames
-                  then put (M.insert block associated map, funcNames)
-                  else return ()
-              case nextBlock of
-                  Just nextBlock' -> addBlock nextBlock'
-                  Nothing -> return ()
-
-associateBasicBlock :: BasicBlock -> FuncOpContext [(Instruction, Maybe MemlogOp)]
-associateBasicBlock = mapM associateInstWithCopy . basicBlockInstructions
-    where associateInstWithCopy inst = do
-              maybeOp <- associateInst inst
-              -- case maybeOp of
-              --   Just _ -> trace (show (identifierAsString $ functionName $ basicBlockFunction $ fromJust $ instructionBasicBlock inst) ++ ": " ++ show inst ++ "=> " ++  show maybeOp) $ return ()
-              --   _ -> return ()
-              return (inst, maybeOp)
-
-associateInst :: Instruction -> FuncOpContext (Maybe MemlogOp)
-associateInst inst@LoadInst{} = liftM Just $ memlogPopWithErrorInst inst
-associateInst inst@StoreInst{ storeIsVolatile = volatile }
-    = if volatile
-        then return Nothing
-        else liftM Just $ memlogPopWithErrorInst inst
-associateInst inst@BranchInst{} = do
-    op <- memlogPopWithErrorInst inst
-    case op of
-        BranchOp branchTaken ->
-            if branchTaken == 0
-                then put $ Just $ branchTrueTarget inst
-                else put $ Just $ branchFalseTarget inst
-        _ -> return ()
-    return $ Just op
-associateInst inst@UnconditionalBranchInst{ unconditionalBranchTarget = target} = do
-    put $ Just target
-    liftM Just $ memlogPopWithErrorInst inst
-
-associateInst RetInst{} = put Nothing >> return Nothing
-associateInst _ = return Nothing
-
-associateFuncs :: [MemlogOp] -> S.Set String -> [Function] -> MemlogMap
-associateFuncs ops funcNames funcs = map
-    where ((map, _), leftoverOps) = runState inner ops
-          inner = execStateT (mapM_ associateMemlogWithFunc funcs) (M.empty, funcNames)
-
-showAssociated :: MemlogMap -> String
-showAssociated theMap = L.intercalate "\n\n" $ map showBlock $ M.toList theMap
-    where showBlock (block, list) = show (basicBlockName block) ++ ":\n" ++ (L.intercalate "\n" $ map showInstOp list)
-          showInstOp (inst, maybeOp) = show inst ++ " => " ++ show maybeOp
 
 takeUntil :: (a -> Bool) -> [a] -> [a]
 takeUntil p (x : xs)
@@ -674,8 +386,7 @@ main = do
     let interestingNames = interesting funcNameList
     let interestingNameSet = S.fromList interestingNames
     let interestingFuncs = map findFunc interestingNames
-    memlogBytes <- B.readFile "/tmp/llvm-memlog.log"
-    let memlog = runGet (many getMemlogEntry) memlogBytes
+    memlog <- parseMemlog
     let associated = associateFuncs memlog interestingNameSet funcList
     -- putStrLn $ showAssociated associated
     putStrLn $ showInfo $ runFunctions associated interestingFuncs

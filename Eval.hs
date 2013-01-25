@@ -34,8 +34,11 @@ data SymbolicState = SymbolicState {
         symbolicNextBlock :: Maybe BasicBlock,
         symbolicFunction :: Function
     } deriving (Eq, Ord, Show)
+-- Symbolic is our fundamental monad: it holds state about control flow and
+-- holds our knowledge of machine state.
 type Symbolic = State SymbolicState
 
+-- Atomic operations inside Symbolic.
 getInfo :: Symbolic Info
 getInfo = symbolicInfo <$> get
 getNextBlock :: Symbolic (Maybe BasicBlock)
@@ -74,6 +77,9 @@ noSymbolicState = SymbolicState{ symbolicInfo = M.empty,
 valueAt :: Loc -> Symbolic Expr
 valueAt loc = exprFindInfo (InputExpr Int64T loc) loc
 
+-- BuildExpr is a monad for building expressions. It allows us to short-
+-- circuit the computation and just return IrrelevantExpr, and it also allows
+-- us to return detailed errors (for now this is not implemented).
 data BuildExprM a
     = Irrelevant
     | ErrorI String
@@ -83,6 +89,7 @@ newtype BuildExprT m a = BuildExprT { runBuildExprT :: m (BuildExprM a) }
 
 type BuildExpr a = BuildExprT (Symbolic) a
 
+-- Monad transformer boilerplate.
 instance (Monad m) => Monad (BuildExprT m) where
     x >>= f = BuildExprT $ do
         v <- runBuildExprT x
@@ -120,6 +127,7 @@ instance (Monad m) => Alternative (BuildExprT m) where
             (ErrorI _, Irrelevant) -> return Irrelevant
             (ErrorI s, ErrorI _) -> return $ ErrorI s
 
+-- Some conversion functions between different monads
 buildExprToMaybeExpr :: (Functor m, Monad m) => BuildExprT m Expr -> MaybeT m Expr
 buildExprToMaybeExpr = MaybeT . fmap buildExprMToMaybeExpr . runBuildExprT
 
@@ -269,6 +277,8 @@ instToExprs = [ binaryInstToExpr,
 memInstToExprs :: [(Instruction, Maybe MemlogOp) -> BuildExpr Expr]
 memInstToExprs = [ loadInstToExpr ]
 
+-- For info updates that might fail, with the intention of no change
+-- if the monad comes back Nothing.
 type MaybeSymb = MaybeT (Symbolic)
 
 makeValueContentRelevant :: ValueContent -> Symbolic ()

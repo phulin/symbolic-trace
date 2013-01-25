@@ -43,8 +43,8 @@ data Expr =
     PtrToIntExpr ExprT Expr |
     IntToPtrExpr ExprT Expr |
     BitcastExpr ExprT Expr |
-    LoadExpr ExprT AddrEntry |
-    BinaryHelperExpr ExprT Identifier Expr Expr | -- not witnessed
+    LoadExpr ExprT Expr AddrEntry | -- expression for location and witnessed address
+    BinaryHelperExpr ExprT Identifier Expr Expr |
     CastHelperExpr ExprT Identifier Expr |
     ILitExpr Integer | -- takes any integer type
     FLitExpr Double | -- takes any float type
@@ -76,7 +76,7 @@ instance Show Expr where
     show (PtrToIntExpr _ e) = printf "PtrToInt(%s)" (show e)
     show (IntToPtrExpr _ e) = printf "IntToPtr(%s)" (show e)
     show (BitcastExpr _ e) = printf "Bitcast(%s)" (show e)
-    show (LoadExpr _ addr) = printf "*%s" (pretty addr)
+    show (LoadExpr _ _ addr) = printf "*%s" (pretty addr)
     show (BinaryHelperExpr _ id e1 e2) = printf "%s(%s, %s)" (show id) (show e1) (show e2)
     show (CastHelperExpr _ id e) = printf "%s(%s)" (show id) (show e)
     show (ILitExpr i) = show i
@@ -126,7 +126,7 @@ simplify (IntToPtrExpr t1 (PtrToIntExpr Int64T e)) = simplify e
 simplify (PtrToIntExpr t e) = PtrToIntExpr t (simplify e)
 simplify (IntToPtrExpr t e) = IntToPtrExpr t (simplify e)
 simplify (BitcastExpr t e) = BitcastExpr t (simplify e)
--- simplify (LoadExpr t e) = LoadExpr t (simplify e)
+simplify (LoadExpr t e addr) = LoadExpr t (simplify e) addr
 simplify (BinaryHelperExpr t id e1 e2) = BinaryHelperExpr t id (simplify e1) (simplify e2)
 simplify (CastHelperExpr t id e) = CastHelperExpr t id (simplify e)
 simplify e = e

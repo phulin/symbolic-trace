@@ -214,7 +214,7 @@ loadInstToExpr (inst@LoadInst{ loadAddress = addr },
     case addrFlag addrEntry of
         IrrelevantFlag -> irrelevant -- Ignore parts of CPU state that Panda doesn't track.
         _ -> (locExpr <$> maybeToM (M.lookup (MemLoc addrEntry) info)) <|>
-             liftM (LoadExpr $ exprTOfInst inst) (return addrEntry)
+             ((LoadExpr $ exprTOfInst inst) <$> valueToExpr addr <*> return addrEntry)
 loadInstToExpr _ = fail ""
 
 gepInstToExpr :: Instruction -> BuildExpr Expr

@@ -32,7 +32,9 @@ type Info = M.Map Loc LocInfo
 data SymbolicState = SymbolicState {
         symbolicInfo :: Info,
         symbolicNextBlock :: Maybe BasicBlock,
-        symbolicFunction :: Function
+        symbolicFunction :: Function,
+        -- Map of names for free variables: loads from uninitialized memory
+        symbolicVarNameMap :: M.Map (ExprT, AddrEntry) String
     } deriving (Eq, Ord, Show)
 -- Symbolic is our fundamental monad: it holds state about control flow and
 -- holds our knowledge of machine state.
@@ -49,6 +51,19 @@ putInfo :: Info -> Symbolic ()
 putInfo info = modify (\s -> s{ symbolicInfo = info })
 putNextBlock :: Maybe BasicBlock -> Symbolic ()
 putNextBlock maybeBlock = modify (\s -> s{ symbolicNextBlock = maybeBlock })
+
+generateName :: ExprT -> AddrEntry -> Symbolic (Maybe String)
+generateName typ addr@AddrEntry{ addrType = MAddr, addrVal = val } = do
+    varNameMap <- getVarNameMap
+    case M.lookup (typ, addr) varNameMap of
+        Just name -> return $ Just name
+        Nothing -> do
+            let newName = printf "%s_%03x_%d" (pretty typ) (val `rem` (2 ^ 12)) (M.size varNameMap)
+            putVarNameMap $ M.insert (typ, addr) newName varNameMap 
+            return $ Just newName
+    where getVarNameMap = symbolicVarNameMap <$> get
+          putVarNameMap m = modify (\s -> s{ symbolicVarNameMap = m })
+generateName _ _ = return Nothing
 
 infoInsert :: Loc -> Expr -> Symbolic ()
 infoInsert key expr = do
@@ -72,7 +87,8 @@ isRelevant loc = do
 noSymbolicState :: SymbolicState
 noSymbolicState = SymbolicState{ symbolicInfo = M.empty,
                                  symbolicNextBlock = Nothing,
-                                 symbolicFunction = error "No function." }
+                                 symbolicFunction = error "No function.",
+                                 symbolicVarNameMap = M.empty }
 
 valueAt :: Loc -> Symbolic Expr
 valueAt loc = exprFindInfo (InputExpr Int64T loc) loc
@@ -211,10 +227,11 @@ loadInstToExpr :: (Instruction, Maybe MemlogOp) -> BuildExpr Expr
 loadInstToExpr (inst@LoadInst{ loadAddress = addr },
                 Just (AddrMemlogOp LoadOp addrEntry)) = do
     info <- lift getInfo
+    let typ = exprTOfInst inst
     case addrFlag addrEntry of
         IrrelevantFlag -> irrelevant -- Ignore parts of CPU state that Panda doesn't track.
         _ -> (locExpr <$> maybeToM (M.lookup (MemLoc addrEntry) info)) <|>
-             ((LoadExpr $ exprTOfInst inst) <$> valueToExpr addr <*> return addrEntry)
+             (LoadExpr typ addrEntry <$> (lift $ generateName typ addrEntry))
 loadInstToExpr _ = fail ""
 
 gepInstToExpr :: Instruction -> BuildExpr Expr

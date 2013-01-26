@@ -19,6 +19,16 @@ instance Pretty Loc where
 
 data ExprT = VoidT | PtrT | Int8T | Int32T | Int64T | FloatT | DoubleT
     deriving (Eq, Ord, Show)
+
+instance Pretty ExprT where
+    pretty VoidT = "void"
+    pretty PtrT = "ptr"
+    pretty Int8T = "i8"
+    pretty Int32T = "i32"
+    pretty Int64T = "i64"
+    pretty FloatT = "flt"
+    pretty DoubleT = "dbl"
+
 data Expr =
     AddExpr ExprT Expr Expr |
     SubExpr ExprT Expr Expr |
@@ -43,7 +53,8 @@ data Expr =
     PtrToIntExpr ExprT Expr |
     IntToPtrExpr ExprT Expr |
     BitcastExpr ExprT Expr |
-    LoadExpr ExprT Expr AddrEntry | -- expression for location and witnessed address
+    -- Type, dynamic address, and name.
+    LoadExpr ExprT AddrEntry (Maybe String) |
     BinaryHelperExpr ExprT Identifier Expr Expr |
     CastHelperExpr ExprT Identifier Expr |
     ILitExpr Integer | -- takes any integer type
@@ -76,7 +87,8 @@ instance Show Expr where
     show (PtrToIntExpr _ e) = printf "PtrToInt(%s)" (show e)
     show (IntToPtrExpr _ e) = printf "IntToPtr(%s)" (show e)
     show (BitcastExpr _ e) = printf "Bitcast(%s)" (show e)
-    show (LoadExpr _ _ addr) = printf "*%s" (pretty addr)
+    show (LoadExpr _ _ (Just name)) = printf "%%%s" name
+    show (LoadExpr _ addr _) = printf "*%s" (pretty addr)
     show (BinaryHelperExpr _ id e1 e2) = printf "%s(%s, %s)" (show id) (show e1) (show e2)
     show (CastHelperExpr _ id e) = printf "%s(%s)" (show id) (show e)
     show (ILitExpr i) = show i
@@ -126,7 +138,6 @@ simplify (IntToPtrExpr t1 (PtrToIntExpr Int64T e)) = simplify e
 simplify (PtrToIntExpr t e) = PtrToIntExpr t (simplify e)
 simplify (IntToPtrExpr t e) = IntToPtrExpr t (simplify e)
 simplify (BitcastExpr t e) = BitcastExpr t (simplify e)
-simplify (LoadExpr t e addr) = LoadExpr t (simplify e) addr
 simplify (BinaryHelperExpr t id e1 e2) = BinaryHelperExpr t id (simplify e1) (simplify e2)
 simplify (CastHelperExpr t id e) = CastHelperExpr t id (simplify e)
 simplify e = e

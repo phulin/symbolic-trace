@@ -400,9 +400,12 @@ showInfo :: Info -> String
 showInfo = unlines . map showEach . filter doShow . M.toList
     where showEach (key, val) = pretty key ++ " -> " ++ show (locExpr val)
           doShow (_, LocInfo{ locRelevant = False }) = False
-          doShow (_, LocInfo{ locExpr = expr }) = doShowExpr expr && (not $ usesEsp expr)
-          doShowExpr (IrrelevantExpr) = False
-          doShowExpr _ = True
+          doShow (_, LocInfo{ locExpr = expr }) = doShowExpr expr
+          doShowExpr IrrelevantExpr = False
+          doShowExpr ILitExpr{} = False
+          doShowExpr LoadExpr{} = False
+          doShowExpr InputExpr{} = False
+          doShowExpr expr = not $ usesEsp expr
 
 takeUntilLast :: (a -> Bool) -> [a] -> [a]
 takeUntilLast p = reverse . dropWhile (not . p) . reverse

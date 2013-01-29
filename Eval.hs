@@ -313,7 +313,7 @@ storeUpdate :: (Instruction, Maybe MemlogOp) -> MaybeSymb ()
 storeUpdate (inst@StoreInst{ storeIsVolatile = False,
                                   storeValue = val },
                   Just (AddrMemlogOp StoreOp addr)) = do
-    -- trace ("STORE: " ++ show inst ++ " ===> " ++ show addr) $ return ()
+    -- trace ("STORE: " ++ show inst ++ " ===> " ++ pretty addr) $ return ()
     value <- buildExprToMaybeExpr $ valueToExpr val
     lift $ infoInsert (MemLoc addr) value
     lift $ makeRelevant $ MemLoc addr
@@ -327,7 +327,11 @@ exprUpdate instOp@(inst, _) = do
     let builtExpr = (foldl1 (<||>) instToExprs) inst <|>
                      loadInstToExpr instOp
     expr <- buildExprToMaybeExpr builtExpr
-    -- traceShow (id, expr) $ return ()
+    -- case expr of
+    --     IrrelevantExpr -> return ()
+    --     _ -> if not $ usesEsp expr
+    --         then traceShow (id, expr) $ return ()
+    --         else return ()
     lift $ infoInsert (IdLoc func id) (repeatf 5 simplify expr)
     where repeatf 0 f x = trace "repeatf overflow, bailing" x
           repeatf n f x
@@ -375,7 +379,9 @@ isMemLoc :: Loc -> Bool
 isMemLoc MemLoc{} = True
 isMemLoc _ = False
 
+-- Run a single LLVM function - equivalently, a basic block in the guest code.
 runFunction :: MemlogMap -> Info -> Function -> Info
+-- runFunction memlogMap initialInfo f = initialInfo `seq` trace ("\n\n" ++ show (functionName f)) $ symbolicInfo state
 runFunction memlogMap initialInfo f = symbolicInfo state
     where computation = runBlock memlogMap $ head $ functionBody f
           state = execState computation initialState
@@ -408,11 +414,8 @@ showInfo = unlines . map showEach . filter doShow . M.toList
           doShowExpr InputExpr{} = False
           doShowExpr expr = not $ usesEsp expr
 
-takeUntilLast :: (a -> Bool) -> [a] -> [a]
-takeUntilLast p = reverse . dropWhile (not . p) . reverse
-
 interesting :: [String] -> [String]
-interesting fs = takeUntilLast boring $ dropWhile boring fs
+interesting fs = L.dropWhileEnd boring $ dropWhile boring fs
     where boring = not . L.isInfixOf "main"
 
 main :: IO ()

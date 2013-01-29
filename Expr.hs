@@ -1,5 +1,6 @@
 module Expr(Loc(..), ExprT(..), Expr(..), simplify, exprTOfInst, typeToExprT, ExprFolders(..), constFolders, foldExpr) where
 
+import Data.Bits((.&.), (.|.), xor)
 import Data.LLVM.Types
 import Text.Printf(printf)
 
@@ -174,7 +175,9 @@ simplify (ShlExpr t e1 e2) = ShlExpr t (simplify e1) (simplify e2)
 simplify (LshrExpr t e1 e2) = LshrExpr t (simplify e1) (simplify e2)
 simplify (AshrExpr _ (ILitExpr 0) _) = ILitExpr 0
 simplify (AshrExpr t e1 e2) = AshrExpr t (simplify e1) (simplify e2)
+simplify (AndExpr t (ILitExpr a) (ILitExpr b)) = ILitExpr $ a .&. b
 simplify (AndExpr t e1 e2) = AndExpr t (simplify e1) (simplify e2)
+simplify (OrExpr t (ILitExpr a) (ILitExpr b)) = ILitExpr $ a .|. b
 simplify (OrExpr t e1 e2) = OrExpr t (simplify e1) (simplify e2)
 simplify (XorExpr t e1 e2) = XorExpr t (simplify e1) (simplify e2)
 simplify (TruncExpr _ (ZExtExpr _ e)) = simplify e

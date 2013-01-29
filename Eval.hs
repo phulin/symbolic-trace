@@ -385,11 +385,22 @@ runFunction memlogMap initialInfo f = symbolicInfo state
 runFunctions :: MemlogMap -> [Function] -> Info
 runFunctions memlogMap fs = foldl (runFunction memlogMap) M.empty fs
 
+usesEsp :: Expr -> Bool
+usesEsp = foldExpr folders
+    where falseFolders = constFolders False
+          isLoadEsp _ addr _ = pretty addr == "ESP"
+          folders = falseFolders{
+              --iLitFolder = const True,
+              --fLitFolder = const True,
+              loadFolder = isLoadEsp,
+              binaryCombiner = (||)
+          }
+
 showInfo :: Info -> String
 showInfo = unlines . map showEach . filter doShow . M.toList
     where showEach (key, val) = pretty key ++ " -> " ++ show (locExpr val)
           doShow (_, LocInfo{ locRelevant = False }) = False
-          doShow (_, LocInfo{ locExpr = expr }) = doShowExpr expr
+          doShow (_, LocInfo{ locExpr = expr }) = doShowExpr expr && (not $ usesEsp expr)
           doShowExpr (IrrelevantExpr) = False
           doShowExpr _ = True
 

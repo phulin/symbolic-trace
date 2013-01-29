@@ -393,14 +393,11 @@ showInfo = unlines . map showEach . filter doShow . M.toList
           doShowExpr (IrrelevantExpr) = False
           doShowExpr _ = True
 
-takeUntil :: (a -> Bool) -> [a] -> [a]
-takeUntil p (x : xs)
-    | p x = []
-    | otherwise = x : (takeUntil p xs)
-takeUntil _ [] = []
+takeUntilLast :: (a -> Bool) -> [a] -> [a]
+takeUntilLast p = reverse . dropWhile (not . p) . reverse
 
 interesting :: [String] -> [String]
-interesting fs = takeUntil boring $ dropWhile boring fs
+interesting fs = takeUntilLast boring $ dropWhile boring fs
     where boring = not . L.isInfixOf "main"
 
 main :: IO ()

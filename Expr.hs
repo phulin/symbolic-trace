@@ -105,11 +105,16 @@ bits t = error $ "Unexpected argument to bits: " ++ show t
 simplify :: Expr -> Expr
 simplify (AddExpr t e1 (ILitExpr 0)) = simplify e1
 simplify (AddExpr t (ILitExpr 0) e2) = simplify e2
+simplify (AddExpr t (ILitExpr a) (ILitExpr b)) = ILitExpr $ a + b
 simplify (AddExpr t e1 e2) = AddExpr t (simplify e1) (simplify e2)
+simplify (SubExpr t (ILitExpr a) (ILitExpr b)) = ILitExpr $ a - b
 simplify (SubExpr t e1 e2) = SubExpr t (simplify e1) (simplify e2)
+simplify (MulExpr t (ILitExpr a) (ILitExpr b)) = ILitExpr $ a * b
 simplify (MulExpr t e1 e2) = MulExpr t (simplify e1) (simplify e2)
 simplify (DivExpr t e1 e2) = DivExpr t (simplify e1) (simplify e2)
 simplify (RemExpr t e1 e2) = RemExpr t (simplify e1) (simplify e2)
+simplify (ShlExpr t e1 (ILitExpr i))
+    = MulExpr t (simplify e1) (ILitExpr $ 2 ^ i)
 simplify (ShlExpr t e1 e2) = ShlExpr t (simplify e1) (simplify e2)
 simplify (LshrExpr t e1 e2) = LshrExpr t (simplify e1) (simplify e2)
 simplify (AshrExpr _ (ILitExpr 0) _) = ILitExpr 0

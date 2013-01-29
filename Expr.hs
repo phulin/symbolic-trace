@@ -1,5 +1,7 @@
 module Expr(Loc(..), ExprT(..), Expr(..), simplify, exprTOfInst, typeToExprT, ExprFolders(..), constFolders, foldExpr) where
 
+import Debug.Trace
+
 import Data.Bits((.&.), (.|.), xor)
 import Data.LLVM.Types
 import Text.Printf(printf)
@@ -166,6 +168,7 @@ simplify (AddExpr t e1 e2) = AddExpr t (simplify e1) (simplify e2)
 simplify (SubExpr t (ILitExpr a) (ILitExpr b)) = ILitExpr $ a - b
 simplify (SubExpr t e1 e2) = SubExpr t (simplify e1) (simplify e2)
 simplify (MulExpr t (ILitExpr a) (ILitExpr b)) = ILitExpr $ a * b
+simplify (MulExpr t e (ILitExpr 1)) = simplify e
 simplify (MulExpr t e1 e2) = MulExpr t (simplify e1) (simplify e2)
 simplify (DivExpr t e1 e2) = DivExpr t (simplify e1) (simplify e2)
 simplify (RemExpr t e1 e2) = RemExpr t (simplify e1) (simplify e2)
@@ -176,6 +179,7 @@ simplify (LshrExpr t e1 e2) = LshrExpr t (simplify e1) (simplify e2)
 simplify (AshrExpr _ (ILitExpr 0) _) = ILitExpr 0
 simplify (AshrExpr t e1 e2) = AshrExpr t (simplify e1) (simplify e2)
 simplify (AndExpr t (ILitExpr a) (ILitExpr b)) = ILitExpr $ a .&. b
+simplify (AndExpr _ (ZExtExpr _ e@(LoadExpr Int8T _ _)) (ILitExpr 255)) = simplify e
 simplify (AndExpr t e1 e2) = AndExpr t (simplify e1) (simplify e2)
 simplify (OrExpr t (ILitExpr a) (ILitExpr b)) = ILitExpr $ a .|. b
 simplify (OrExpr t e1 e2) = OrExpr t (simplify e1) (simplify e2)

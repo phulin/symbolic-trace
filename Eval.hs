@@ -313,8 +313,9 @@ storeUpdate :: (Instruction, Maybe MemlogOp) -> MaybeSymb ()
 storeUpdate (inst@StoreInst{ storeIsVolatile = False,
                                   storeValue = val },
                   Just (AddrMemlogOp StoreOp addr)) = do
-    -- trace ("STORE: " ++ show inst ++ " ===> " ++ pretty addr) $ return ()
     value <- buildExprToMaybeExpr $ valueToExpr val
+--     if usesEsp value && not (addrFlag addr == IrrelevantFlag) then return ()
+--         else trace ("STORE: " ++ show value ++ " ===> " ++ pretty addr) $ return ()
     lift $ infoInsert (MemLoc addr) value
     lift $ makeRelevant $ MemLoc addr
     lift $ makeValueRelevant val
@@ -327,11 +328,11 @@ exprUpdate instOp@(inst, _) = do
     let builtExpr = (foldl1 (<||>) instToExprs) inst <|>
                      loadInstToExpr instOp
     expr <- buildExprToMaybeExpr builtExpr
-    -- case expr of
-    --     IrrelevantExpr -> return ()
-    --     _ -> if not $ usesEsp expr
-    --         then traceShow (id, expr) $ return ()
-    --         else return ()
+--     case expr of
+--         IrrelevantExpr -> return ()
+--         _ -> if not $ usesEsp expr
+--             then traceShow (id, expr) $ return ()
+--             else return ()
     lift $ infoInsert (IdLoc func id) (repeatf 5 simplify expr)
     where repeatf 0 f x = trace "repeatf overflow, bailing" x
           repeatf n f x
@@ -349,10 +350,11 @@ controlFlowUpdate (RetInst{ retInstValue = Just val }, _) = do
     lift $ putNextBlock $ Nothing
 controlFlowUpdate (UnconditionalBranchInst{ unconditionalBranchTarget = target }, _)
     = lift $ putNextBlock $ Just target
-controlFlowUpdate (BranchInst{ branchTrueTarget = trueTarget,
-                               branchFalseTarget = falseTarget,
-                               branchCondition = cond },
-                   Just (BranchOp idx)) = do
+controlFlowUpdate inst@(BranchInst{ branchTrueTarget = trueTarget,
+                                    branchFalseTarget = falseTarget,
+                                    branchCondition = cond },
+                        Just (BranchOp idx)) = do
+--     trace ("BRANCH: " ++ show cond ++ "\n    " ++ show inst) $ return ()
     lift $ makeValueRelevant $ cond
     case idx of
         0 -> lift $ putNextBlock $ Just trueTarget
@@ -407,6 +409,7 @@ showInfo = unlines . map showEach . filter doShow . M.toList
     where showEach (key, val) = pretty key ++ " -> " ++ show (locExpr val)
           doShow (_, LocInfo{ locRelevant = False }) = False
           doShow (IdLoc{}, LocInfo{ locExpr = expr }) = doShowExpr expr
+          doShow (MemLoc{}, LocInfo{ locExpr = IrrelevantExpr }) = False
           doShow _ = True
           doShowExpr IrrelevantExpr = False
           doShowExpr ILitExpr{} = False

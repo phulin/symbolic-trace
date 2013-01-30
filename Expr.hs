@@ -163,10 +163,13 @@ simplify (AddExpr t (ILitExpr 0) e2) = simplify e2
 simplify (AddExpr t (ILitExpr a) (ILitExpr b)) = ILitExpr $ a + b
 simplify (AddExpr ta (MulExpr tm e1 e2) e3)
     | e1 == e3 = MulExpr ta e1 (AddExpr tm e2 (ILitExpr 1))
+simplify (AddExpr t (AddExpr _ e1 (ILitExpr a)) (ILitExpr b))
+    = AddExpr t (simplify e1) (ILitExpr $ a + b)
 simplify (AddExpr t e1 e2)
     | e1 == e2 = MulExpr t (simplify e1) (ILitExpr 2)
 simplify (AddExpr t e1 e2) = AddExpr t (simplify e1) (simplify e2)
 simplify (SubExpr t (ILitExpr a) (ILitExpr b)) = ILitExpr $ a - b
+simplify (SubExpr t e1 (ILitExpr b)) = AddExpr t (simplify e1) (ILitExpr $ -b)
 simplify (SubExpr t e1 e2) = SubExpr t (simplify e1) (simplify e2)
 simplify (MulExpr t (ILitExpr a) (ILitExpr b)) = ILitExpr $ a * b
 simplify (MulExpr t e (ILitExpr 1)) = simplify e

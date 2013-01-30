@@ -254,6 +254,7 @@ helperInstToExpr inst@CallInst{ callFunction = funcValue,
     case valueContent funcValue of
         ExternalFunctionC (ExternalFunction{ externalFunctionName = funcId })
             | "helper_" `L.isPrefixOf` identifierAsString funcId -> case funcArgs of
+                [] -> trace (printf "Stateful helper %s" (show funcId)) $ fail ""
                 [(argVal, _)] -> do
                     argExpr <- valueToExpr argVal
                     return $ CastHelperExpr (exprTOfInst inst) funcId argExpr
@@ -261,7 +262,7 @@ helperInstToExpr inst@CallInst{ callFunction = funcValue,
                      argExpr1 <- valueToExpr argVal1
                      argExpr2 <- valueToExpr argVal2
                      return $ BinaryHelperExpr (exprTOfInst inst) funcId argExpr1 argExpr2
-                _ -> trace ("Bad funcArgs: " ++ (show funcArgs)) $ fail ""
+                _ -> trace (printf "Bad funcArgs: %s(%s)" (show funcId) (show funcArgs)) $ fail ""
             | otherwise -> fail ""
         _ -> fail ""
 helperInstToExpr _ = fail ""

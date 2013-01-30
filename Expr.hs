@@ -6,7 +6,7 @@ import Data.Bits((.&.), (.|.), xor)
 import Data.LLVM.Types
 import Text.Printf(printf)
 
-import Memlog(AddrEntry)
+import Memlog(AddrEntry(..), AddrEntryType(..))
 import Pretty(Pretty, pretty)
 
 data Loc = IdLoc Function Identifier | MemLoc AddrEntry
@@ -91,6 +91,7 @@ instance Show Expr where
     show (IntToPtrExpr _ e) = printf "IntToPtr(%s)" (show e)
     show (BitcastExpr _ e) = printf "Bitcast(%s)" (show e)
     show (LoadExpr _ _ (Just name)) = printf "%%%s" name
+    show (LoadExpr _ addr@AddrEntry{ addrType = GReg } _) = printf "%s" (pretty addr)
     show (LoadExpr _ addr _) = printf "*%s" (pretty addr)
     show (BinaryHelperExpr _ id e1 e2) = printf "%s(%s, %s)" (show id) (show e1) (show e2)
     show (CastHelperExpr _ id e) = printf "%s(%s)" (show id) (show e)

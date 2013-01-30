@@ -24,8 +24,17 @@ import Pretty
 
 data LocInfo = LocInfo{
     locExpr :: Expr,
-    locRelevant :: Bool
+    locRelevant :: Bool,
+    -- Guest instruction address where loc originated
+    locOrigin :: Maybe Word64
 } deriving (Eq, Ord, Show)
+
+noLocInfo :: LocInfo
+noLocInfo = LocInfo{
+    locExpr = IrrelevantExpr,
+    locRelevant = False,
+    locOrigin = Nothing
+}
 
 -- Representation of our [partial] knowledge of machine state.
 type Info = M.Map Loc LocInfo
@@ -34,7 +43,8 @@ data SymbolicState = SymbolicState {
         symbolicNextBlock :: Maybe BasicBlock,
         symbolicFunction :: Function,
         -- Map of names for free variables: loads from uninitialized memory
-        symbolicVarNameMap :: M.Map (ExprT, AddrEntry) String
+        symbolicVarNameMap :: M.Map (ExprT, AddrEntry) String,
+        symbolicCurrentIP :: Maybe Word64
     } deriving (Eq, Ord, Show)
 -- Symbolic is our fundamental monad: it holds state about control flow and
 -- holds our knowledge of machine state.
@@ -47,10 +57,14 @@ getNextBlock :: Symbolic (Maybe BasicBlock)
 getNextBlock = symbolicNextBlock <$> get
 getCurrentFunction :: Symbolic Function
 getCurrentFunction = symbolicFunction <$> get
+getCurrentIP :: Symbolic (Maybe Word64)
+getCurrentIP = symbolicCurrentIP <$> get
 putInfo :: Info -> Symbolic ()
 putInfo info = modify (\s -> s{ symbolicInfo = info })
 putNextBlock :: Maybe BasicBlock -> Symbolic ()
 putNextBlock maybeBlock = modify (\s -> s{ symbolicNextBlock = maybeBlock })
+putCurrentIP :: Maybe Word64 -> Symbolic ()
+putCurrentIP newIP = modify (\s -> s{ symbolicCurrentIP = newIP })
 
 generateName :: ExprT -> AddrEntry -> Symbolic (Maybe String)
 generateName typ addr@AddrEntry{ addrType = MAddr, addrVal = val } = do
@@ -65,18 +79,17 @@ generateName typ addr@AddrEntry{ addrType = MAddr, addrVal = val } = do
           putVarNameMap m = modify (\s -> s{ symbolicVarNameMap = m })
 generateName _ _ = return Nothing
 
-infoInsert :: Loc -> Expr -> Symbolic ()
-infoInsert key expr = do
+locInfoInsert :: Loc -> LocInfo -> Symbolic ()
+locInfoInsert key locInfo = do
     info <- getInfo
     putInfo $ M.insert key locInfo info
-    where locInfo = LocInfo{ locExpr = expr, locRelevant = False }
 makeRelevant :: Loc -> Symbolic ()
 makeRelevant loc = do
     info <- getInfo
     putInfo $ M.adjust (\li -> li{ locRelevant = True }) loc info
 exprFindInfo :: Expr -> Loc -> Symbolic Expr
 exprFindInfo def key = locExpr <$> M.findWithDefault defLocInfo key <$> getInfo
-    where defLocInfo = LocInfo { locExpr = def, locRelevant = undefined }
+    where defLocInfo = noLocInfo{ locExpr = def }
 isRelevant :: Loc -> Symbolic Bool
 isRelevant loc = do
     info <- getInfo
@@ -88,7 +101,8 @@ noSymbolicState :: SymbolicState
 noSymbolicState = SymbolicState{ symbolicInfo = M.empty,
                                  symbolicNextBlock = Nothing,
                                  symbolicFunction = error "No function.",
-                                 symbolicVarNameMap = M.empty }
+                                 symbolicVarNameMap = M.empty,
+                                 symbolicCurrentIP = Nothing }
 
 valueAt :: Loc -> Symbolic Expr
 valueAt loc = exprFindInfo (InputExpr Int64T loc) loc
@@ -317,9 +331,19 @@ storeUpdate (inst@StoreInst{ storeIsVolatile = False,
     value <- buildExprToMaybeExpr $ valueToExpr val
 --     if usesEsp value && not (addrFlag addr == IrrelevantFlag) then return ()
 --         else trace ("STORE: " ++ show value ++ " ===> " ++ pretty addr) $ return ()
-    lift $ infoInsert (MemLoc addr) value
+    currentIP <- lift getCurrentIP
+    let locInfo = noLocInfo{ locExpr = value, locOrigin = currentIP }
+    lift $ locInfoInsert (MemLoc addr) locInfo
     lift $ makeRelevant $ MemLoc addr
     lift $ makeValueRelevant val
+-- This will trigger twice with each IP update, but that's okay because the
+-- second one is the one we want.
+storeUpdate (StoreInst{ storeIsVolatile = True,
+                        storeValue = val }, _) = do
+    ip <- case valueContent val of
+        ConstantC (ConstantInt{ constantIntValue = ipVal }) -> return ipVal
+        _ -> trace "Failed to update IP" $ fail ""
+    lift $ putCurrentIP $ Just $ fromIntegral $ ip
 storeUpdate _ = fail ""
 
 exprUpdate :: (Instruction, Maybe MemlogOp) -> MaybeSymb ()
@@ -334,7 +358,10 @@ exprUpdate instOp@(inst, _) = do
 --         _ -> if not $ usesEsp expr
 --             then traceShow (id, expr) $ return ()
 --             else return ()
-    lift $ infoInsert (IdLoc func id) (repeatf 5 simplify expr)
+    currentIP <- lift getCurrentIP
+    let simplified = repeatf 8 simplify expr
+    let locInfo = noLocInfo{ locExpr = simplified, locOrigin = currentIP }
+    lift $ locInfoInsert (IdLoc func id) locInfo
     where repeatf 0 f x = trace "repeatf overflow, bailing" x
           repeatf n f x
               | x == f x = x
@@ -407,7 +434,8 @@ usesEsp = foldExpr folders
 
 showInfo :: Info -> String
 showInfo = unlines . map showEach . filter doShow . M.toList
-    where showEach (key, val) = pretty key ++ " -> " ++ show (locExpr val)
+    where showEach (key, val) = printf "%s %s-> %s" (pretty key) origin (show (locExpr val))
+              where origin = fromMaybe "" $ printf "(from %x) " <$> locOrigin val
           doShow (_, LocInfo{ locRelevant = False }) = False
           doShow (IdLoc{}, LocInfo{ locExpr = expr }) = doShowExpr expr
           doShow (MemLoc{}, LocInfo{ locExpr = IrrelevantExpr }) = False

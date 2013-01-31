@@ -44,7 +44,8 @@ data SymbolicState = SymbolicState {
         symbolicFunction :: Function,
         -- Map of names for free variables: loads from uninitialized memory
         symbolicVarNameMap :: M.Map (ExprT, AddrEntry) String,
-        symbolicCurrentIP :: Maybe Word64
+        symbolicCurrentIP :: Maybe Word64,
+        symbolicWarnings :: [String]
     } deriving (Eq, Ord, Show)
 -- Symbolic is our fundamental monad: it holds state about control flow and
 -- holds our knowledge of machine state.
@@ -63,6 +64,8 @@ putInfo :: Info -> Symbolic ()
 putInfo info = modify (\s -> s{ symbolicInfo = info })
 putNextBlock :: Maybe BasicBlock -> Symbolic ()
 putNextBlock maybeBlock = modify (\s -> s{ symbolicNextBlock = maybeBlock })
+putCurrentFunction :: Function -> Symbolic ()
+putCurrentFunction f = modify (\s -> s{ symbolicFunction = f })
 putCurrentIP :: Maybe Word64 -> Symbolic ()
 putCurrentIP newIP = modify (\s -> s{ symbolicCurrentIP = newIP })
 
@@ -78,6 +81,11 @@ generateName typ addr@AddrEntry{ addrType = MAddr, addrVal = val } = do
     where getVarNameMap = symbolicVarNameMap <$> get
           putVarNameMap m = modify (\s -> s{ symbolicVarNameMap = m })
 generateName _ _ = return Nothing
+
+warning :: String -> Symbolic ()
+warning warn = do
+    warnings <- symbolicWarnings <$> get
+    modify (\s -> s{ symbolicWarnings = warnings ++ [warn] })
 
 locInfoInsert :: Loc -> LocInfo -> Symbolic ()
 locInfoInsert key locInfo = do
@@ -102,7 +110,8 @@ noSymbolicState = SymbolicState{ symbolicInfo = M.empty,
                                  symbolicNextBlock = Nothing,
                                  symbolicFunction = error "No function.",
                                  symbolicVarNameMap = M.empty,
-                                 symbolicCurrentIP = Nothing }
+                                 symbolicCurrentIP = Nothing,
+                                 symbolicWarnings = [] }
 
 valueAt :: Loc -> Symbolic Expr
 valueAt loc = exprFindInfo (InputExpr Int64T loc) loc
@@ -190,7 +199,7 @@ valueContentToExpr (ArgumentC (Argument{ argumentName = name,
                                          argumentType = argType })) = do
     func <- lift getCurrentFunction
     return $ InputExpr (typeToExprT argType) (IdLoc func name)
-valueContentToExpr val = trace ("Couldn't find expr for " ++ show val) fail ""
+valueContentToExpr val = lift (warning ("Couldn't find expr for " ++ show val)) >> fail ""
 
 valueToExpr :: Value -> BuildExpr Expr
 valueToExpr = valueContentToExpr . valueContent
@@ -255,10 +264,10 @@ gepInstToExpr inst@GetElementPtrInst{ _instructionType = instType,
     valueExpr <- valueToExpr value
     size <- case instType of
         TypePointer (TypeInteger bits) _ -> return $ bits `quot` 8
-        other -> trace ("Type failure: " ++ show other) fail ""
+        other -> lift (warning ("Type failure: " ++ show other)) >> fail ""
     index <- case map valueContent indices of
         [ConstantC (ConstantInt{ constantIntValue = idx })] -> return idx
-        other -> trace ("Value failure: " ++ show other) fail ""
+        other -> lift (warning ("Value failure: " ++ show other)) >> fail ""
     return $ IntToPtrExpr PtrT $ AddExpr (exprTOfInst inst) valueExpr (ILitExpr $ fromIntegral size * index)
 gepInstToExpr _ = fail ""
 
@@ -266,18 +275,24 @@ helperInstToExpr :: Instruction -> BuildExpr Expr
 helperInstToExpr inst@CallInst{ callFunction = funcValue,
                                 callArguments = funcArgs } = do
     case valueContent funcValue of
-        ExternalFunctionC (ExternalFunction{ externalFunctionName = funcId })
-            | "helper_" `L.isPrefixOf` identifierAsString funcId -> case funcArgs of
-                [] -> trace (printf "Stateful helper %s" (show funcId)) $ fail ""
-                [(argVal, _)] -> do
-                    argExpr <- valueToExpr argVal
-                    return $ CastHelperExpr (exprTOfInst inst) funcId argExpr
-                [(argVal1, _), (argVal2, _)] -> do
-                     argExpr1 <- valueToExpr argVal1
-                     argExpr2 <- valueToExpr argVal2
-                     return $ BinaryHelperExpr (exprTOfInst inst) funcId argExpr1 argExpr2
-                _ -> trace (printf "Bad funcArgs: %s(%s)" (show funcId) (show funcArgs)) $ fail ""
-            | otherwise -> fail ""
+        ExternalFunctionC (ExternalFunction{ externalFunctionType = funcType,
+                                             externalFunctionName = funcId }) ->
+            if "helper_" `L.isPrefixOf` identifierAsString funcId
+                then case funcArgs of
+                    [] -> lift (warning (printf "Stateful helper %s" (show funcId))) >> fail ""
+                    [(argVal, _)] -> do
+                        argExpr <- valueToExpr argVal
+                        return $ CastHelperExpr (exprTOfInst inst) funcId argExpr
+                    [(argVal1, _), (argVal2, _)] -> do
+                        case funcType of
+                            TypeFunction TypeVoid _ _ ->
+                                lift $ warning $ printf "Stateful binary helper %s" (show funcId)
+                            _ -> return ()
+                        argExpr1 <- valueToExpr argVal1
+                        argExpr2 <- valueToExpr argVal2
+                        return $ BinaryHelperExpr (exprTOfInst inst) funcId argExpr1 argExpr2
+                    _ -> lift (warning (printf "Bad funcArgs: %s(%s)" (show funcId) (show funcArgs))) >> fail ""
+                else fail ""
         _ -> fail ""
 helperInstToExpr _ = fail ""
 
@@ -342,7 +357,7 @@ storeUpdate (StoreInst{ storeIsVolatile = True,
                         storeValue = val }, _) = do
     ip <- case valueContent val of
         ConstantC (ConstantInt{ constantIntValue = ipVal }) -> return ipVal
-        _ -> trace "Failed to update IP" $ fail ""
+        _ -> lift (warning "Failed to update IP") >> fail ""
     lift $ putCurrentIP $ Just $ fromIntegral $ ip
 storeUpdate _ = fail ""
 
@@ -410,16 +425,17 @@ isMemLoc MemLoc{} = True
 isMemLoc _ = False
 
 -- Run a single LLVM function - equivalently, a basic block in the guest code.
-runFunction :: MemlogMap -> Info -> Function -> Info
+runFunction :: MemlogMap -> Function -> Symbolic ()
 -- runFunction memlogMap initialInfo f = initialInfo `seq` trace ("\n\n" ++ show (functionName f)) $ symbolicInfo state
-runFunction memlogMap initialInfo f = symbolicInfo state
-    where computation = runBlock memlogMap $ head $ functionBody f
-          state = execState computation initialState
-          initialState = noSymbolicState{ symbolicInfo = initialInfo,
-                                          symbolicFunction = f }
+runFunction memlogMap f = do
+    putCurrentFunction f
+    runBlock memlogMap $ head $ functionBody f
 
-runFunctions :: MemlogMap -> [Function] -> Info
-runFunctions memlogMap fs = foldl (runFunction memlogMap) M.empty fs
+runFunctions :: MemlogMap -> [Function] -> (Info, [String])
+runFunctions memlogMap fs = (symbolicInfo state, symbolicWarnings state)
+    where computation = mapM_ (runFunction memlogMap) fs
+          state = execState computation initialState
+          initialState = noSymbolicState{ symbolicFunction = head fs }
 
 usesEsp :: Expr -> Bool
 usesEsp = foldExpr folders
@@ -463,4 +479,9 @@ main = do
     memlog <- parseMemlog
     let associated = associateFuncs memlog interestingNameSet funcList
     -- putStrLn $ showAssociated associated
-    putStrLn $ showInfo $ runFunctions associated interestingFuncs
+    let (info, warnings) = runFunctions associated interestingFuncs
+    putStrLn "Warnings:"
+    putStr " - "
+    putStrLn $ L.intercalate "\n - " warnings
+    putStrLn ""
+    putStrLn $ showInfo $ info

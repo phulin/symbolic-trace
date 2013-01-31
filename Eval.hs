@@ -45,7 +45,8 @@ data SymbolicState = SymbolicState {
         -- Map of names for free variables: loads from uninitialized memory
         symbolicVarNameMap :: M.Map (ExprT, AddrEntry) String,
         symbolicCurrentIP :: Maybe Word64,
-        symbolicWarnings :: [String]
+        symbolicWarnings :: [String],
+        symbolicMessages :: [String]
     } deriving (Eq, Ord, Show)
 -- Symbolic is our fundamental monad: it holds state about control flow and
 -- holds our knowledge of machine state.
@@ -86,6 +87,10 @@ warning :: String -> Symbolic ()
 warning warn = do
     warnings <- symbolicWarnings <$> get
     modify (\s -> s{ symbolicWarnings = warnings ++ [warn] })
+message :: String -> Symbolic ()
+message msg = do
+    messages <- symbolicMessages <$> get
+    modify (\s -> s{ symbolicMessages = messages ++ [msg] })
 
 locInfoInsert :: Loc -> LocInfo -> Symbolic ()
 locInfoInsert key locInfo = do
@@ -111,7 +116,8 @@ noSymbolicState = SymbolicState{ symbolicInfo = M.empty,
                                  symbolicFunction = error "No function.",
                                  symbolicVarNameMap = M.empty,
                                  symbolicCurrentIP = Nothing,
-                                 symbolicWarnings = [] }
+                                 symbolicWarnings = [],
+                                 symbolicMessages = [] }
 
 valueAt :: Loc -> Symbolic Expr
 valueAt loc = exprFindInfo (InputExpr Int64T loc) loc
@@ -354,9 +360,9 @@ storeUpdate (inst@StoreInst{ storeIsVolatile = False,
                                   storeValue = val },
                   Just (AddrMemlogOp StoreOp addr)) = do
     value <- buildExprToMaybeExpr $ valueToExpr val
---     if usesEsp value && not (addrFlag addr == IrrelevantFlag) then return ()
---         else trace ("STORE: " ++ show value ++ " ===> " ++ pretty addr) $ return ()
     currentIP <- lift getCurrentIP
+    if usesEsp value && not (addrFlag addr == IrrelevantFlag) || fromJust currentIP >= 2 ^ 32 then return ()
+        else lift $ message $ printf "STORE (%x): %s ===> %s" (fromMaybe 0 currentIP) (show value) (pretty addr)
     let locInfo = noLocInfo{ locExpr = value, locOrigin = currentIP }
     lift $ locInfoInsert (MemLoc addr) locInfo
     lift $ makeRelevant $ MemLoc addr
@@ -407,7 +413,11 @@ controlFlowUpdate inst@(BranchInst{ branchTrueTarget = trueTarget,
                                     branchFalseTarget = falseTarget,
                                     branchCondition = cond },
                         Just (BranchOp idx)) = do
---     trace ("BRANCH: " ++ show cond ++ "\n    " ++ show inst) $ return ()
+    (do
+        condExpr <- buildExprToMaybeExpr $ valueToExpr cond
+        currentIP <- fromJust <$> lift getCurrentIP
+        when (currentIP > (2 ^ 32)) $ fail ""
+        lift $ message $ printf "BRANCH (%x): %s\n    %s" currentIP (show condExpr) (show inst)) <|> return ()
     lift $ makeValueRelevant $ cond
     case idx of
         0 -> lift $ putNextBlock $ Just trueTarget
@@ -441,10 +451,9 @@ runFunction memlogMap f = do
     putCurrentFunction f
     runBlock memlogMap $ head $ functionBody f
 
-runFunctions :: MemlogMap -> [Function] -> (Info, [String])
-runFunctions memlogMap fs = (symbolicInfo state, symbolicWarnings state)
+runFunctions :: MemlogMap -> [Function] -> SymbolicState
+runFunctions memlogMap fs = execState computation initialState
     where computation = mapM_ (runFunction memlogMap) fs
-          state = execState computation initialState
           initialState = noSymbolicState{ symbolicFunction = head fs }
 
 usesEsp :: Expr -> Bool
@@ -489,9 +498,16 @@ main = do
     memlog <- parseMemlog
     let associated = associateFuncs memlog interestingNameSet funcList
     -- putStrLn $ showAssociated associated
-    let (info, warnings) = runFunctions associated interestingFuncs
-    putStrLn "Warnings:"
-    putStr " - "
-    putStrLn $ L.intercalate "\n - " warnings
-    putStrLn ""
-    putStrLn $ showInfo $ info
+    let state = runFunctions associated interestingFuncs
+    let warnings = symbolicWarnings state
+    let messages = symbolicMessages state
+    when (not $ null warnings) $ do
+        putStrLn "Warnings:"
+        putStr " - "
+        putStrLn $ L.intercalate "\n - " warnings
+        putStrLn ""
+    when (not $ null messages) $ do
+        putStrLn "Messages:"
+        putStrLn $ L.intercalate "\n" messages
+        putStrLn ""
+    putStrLn $ showInfo $ symbolicInfo state

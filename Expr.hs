@@ -162,14 +162,22 @@ simplify (AddExpr t e1 (ILitExpr 0)) = simplify e1
 simplify (AddExpr t (ILitExpr 0) e2) = simplify e2
 simplify (AddExpr t (ILitExpr a) (ILitExpr b)) = ILitExpr $ a + b
 simplify (AddExpr ta (MulExpr tm e1 e2) e3)
-    | e1 == e3 = MulExpr ta e1 (AddExpr tm e2 (ILitExpr 1))
+    | e1 == e3 = MulExpr ta (simplify e1) (AddExpr tm (simplify e2) (ILitExpr 1))
 simplify (AddExpr t (AddExpr _ e1 (ILitExpr a)) (ILitExpr b))
     = AddExpr t (simplify e1) (ILitExpr $ a + b)
+simplify (AddExpr _ (SubExpr _ e1 e2) e3)
+    | e2 == e3 = simplify e1
 simplify (AddExpr t e1 e2)
     | e1 == e2 = MulExpr t (simplify e1) (ILitExpr 2)
 simplify (AddExpr t e1 e2) = AddExpr t (simplify e1) (simplify e2)
 simplify (SubExpr t (ILitExpr a) (ILitExpr b)) = ILitExpr $ a - b
 simplify (SubExpr t e1 (ILitExpr b)) = AddExpr t (simplify e1) (ILitExpr $ -b)
+simplify (SubExpr t e1 e2)
+    | e1 == e2 = ILitExpr 0
+simplify (SubExpr ta (MulExpr tm e1 e2) e3)
+    | e1 == e3 = MulExpr ta (simplify e1) (SubExpr tm (simplify e2) (ILitExpr 1))
+simplify (SubExpr t (AddExpr _ e1 e2) (AddExpr _ e3 e4))
+    | e1 == e3 = SubExpr t (simplify e2) (simplify e4)
 simplify (SubExpr t e1 e2) = SubExpr t (simplify e1) (simplify e2)
 simplify (MulExpr t (ILitExpr a) (ILitExpr b)) = ILitExpr $ a * b
 simplify (MulExpr t e (ILitExpr 1)) = simplify e
@@ -209,6 +217,8 @@ simplify (IntToPtrExpr t1 (PtrToIntExpr Int64T e)) = simplify e
 simplify (PtrToIntExpr t e) = PtrToIntExpr t (simplify e)
 simplify (IntToPtrExpr t e) = IntToPtrExpr t (simplify e)
 simplify (BitcastExpr t e) = BitcastExpr t (simplify e)
+simplify (BinaryHelperExpr t id e1 e2)
+    | identifierAsString id == "helper_imulq_T0_T1" = MulExpr t (simplify e1) (simplify e2)
 simplify (BinaryHelperExpr t id e1 e2) = BinaryHelperExpr t id (simplify e1) (simplify e2)
 simplify (CastHelperExpr t id e) = CastHelperExpr t id (simplify e)
 simplify e = e

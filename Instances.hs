@@ -9,3 +9,5 @@ deriving instance Show GlobalAlias
 deriving instance Show GlobalVariable
 deriving instance Show BasicBlock
 deriving instance Show ValueContent
+
+deriving instance Ord CmpPredicate

@@ -296,6 +296,15 @@ helperInstToExpr inst@CallInst{ callFunction = funcValue,
         _ -> fail ""
 helperInstToExpr _ = fail ""
 
+icmpInstToExpr :: Instruction -> BuildExpr Expr
+icmpInstToExpr inst@ICmpInst{ cmpPredicate = pred,
+                              cmpV1 = val1,
+                              cmpV2 = val2 } = do
+    expr1 <- valueToExpr val1
+    expr2 <- valueToExpr val2
+    return $ ICmpExpr pred (simplify expr1) (simplify expr2)
+icmpInstToExpr _ = fail ""
+
 traceInst :: Instruction -> a -> a
 traceInst inst = trace ("Couldn't process inst " ++ (show inst))
 
@@ -319,7 +328,8 @@ instToExprs :: [Instruction -> BuildExpr Expr]
 instToExprs = [ binaryInstToExpr,
                 castInstToExpr,
                 gepInstToExpr,
-                helperInstToExpr ]
+                helperInstToExpr,
+                icmpInstToExpr ]
 
 memInstToExprs :: [(Instruction, Maybe MemlogOp) -> BuildExpr Expr]
 memInstToExprs = [ loadInstToExpr ]

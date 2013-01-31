@@ -60,6 +60,7 @@ data Expr =
     LoadExpr ExprT AddrEntry (Maybe String) |
     BinaryHelperExpr ExprT Identifier Expr Expr |
     CastHelperExpr ExprT Identifier Expr |
+    ICmpExpr CmpPredicate Expr Expr |
     ILitExpr Integer | -- takes any integer type
     FLitExpr Double | -- takes any float type
     InputExpr ExprT Loc |
@@ -95,6 +96,7 @@ instance Show Expr where
     show (LoadExpr _ addr _) = printf "*%s" (pretty addr)
     show (BinaryHelperExpr _ id e1 e2) = printf "%s(%s, %s)" (show id) (show e1) (show e2)
     show (CastHelperExpr _ id e) = printf "%s(%s)" (show id) (show e)
+    show (ICmpExpr pred e1 e2) = printf "ICmp(%s, %s, %s)" (show pred) (show e1) (show e2)
     show (ILitExpr i) = show i
     show (FLitExpr f) = show f
     show (InputExpr _ loc) = printf "(%s)" (show loc)
@@ -146,6 +148,7 @@ foldExpr fs (BitcastExpr t e) = foldExpr fs e
 foldExpr fs (LoadExpr t addr name) = loadFolder fs t addr name
 foldExpr fs (BinaryHelperExpr t id e1 e2) = binaryCombiner fs (foldExpr fs e1) (foldExpr fs e2)
 foldExpr fs (CastHelperExpr t id e) = foldExpr fs e
+foldExpr fs (ICmpExpr pred e1 e2) = binaryCombiner fs (foldExpr fs e1) (foldExpr fs e2)
 foldExpr fs (ILitExpr i) = iLitFolder fs i
 foldExpr fs (FLitExpr f) = fLitFolder fs f
 foldExpr fs (InputExpr t loc) = inputFolder fs t loc

@@ -90,7 +90,10 @@ warning warn = do
 message :: String -> Symbolic ()
 message msg = do
     messages <- symbolicMessages <$> get
-    modify (\s -> s{ symbolicMessages = messages ++ [msg] })
+    Just currentIP <- getCurrentIP
+    if currentIP <= 2 ^ 32
+        then modify (\s -> s{ symbolicMessages = messages ++ [msg] })
+        else return ()
 
 locInfoInsert :: Loc -> LocInfo -> Symbolic ()
 locInfoInsert key locInfo = do
@@ -259,8 +262,12 @@ loadInstToExpr (inst@LoadInst{ loadAddress = addr },
     let typ = exprTOfInst inst
     case addrFlag addrEntry of
         IrrelevantFlag -> irrelevant -- Ignore parts of CPU state that Panda doesn't track.
-        _ -> (locExpr <$> maybeToM (M.lookup (MemLoc addrEntry) info)) <|>
-             (LoadExpr typ addrEntry <$> (lift $ generateName typ addrEntry))
+        _ -> do
+            expr <- (locExpr <$> maybeToM (M.lookup (MemLoc addrEntry) info)) <|>
+                    (LoadExpr typ addrEntry <$> (lift $ generateName typ addrEntry))
+            Just currentIP <- lift getCurrentIP
+            lift $ message $ printf "LOAD  (%x): %s <=== %s" currentIP (show expr) (pretty addrEntry)
+            return expr
 loadInstToExpr _ = fail ""
 
 gepInstToExpr :: Instruction -> BuildExpr Expr
@@ -361,7 +368,8 @@ storeUpdate (inst@StoreInst{ storeIsVolatile = False,
                   Just (AddrMemlogOp StoreOp addr)) = do
     value <- buildExprToMaybeExpr $ valueToExpr val
     currentIP <- lift getCurrentIP
-    if usesEsp value && not (addrFlag addr == IrrelevantFlag) || fromJust currentIP >= 2 ^ 32 then return ()
+    if usesEsp value && not (addrFlag addr == IrrelevantFlag) -- || fromJust currentIP >= 2 ^ 32
+        then return ()
         else lift $ message $ printf "STORE (%x): %s ===> %s" (fromMaybe 0 currentIP) (show value) (pretty addr)
     let locInfo = noLocInfo{ locExpr = value, locOrigin = currentIP }
     lift $ locInfoInsert (MemLoc addr) locInfo
@@ -401,7 +409,7 @@ exprUpdate instOp@(inst, _) = do
 -- Ignore alloca instructions
 nullUpdate :: (Instruction, Maybe MemlogOp) -> MaybeSymb ()
 nullUpdate (AllocaInst{}, _) = return ()
-nullUpdate _ = fail ""
+nullUpdate (inst, _) = maybeTraceInst inst $ fail ""
 
 controlFlowUpdate :: (Instruction, Maybe MemlogOp) -> MaybeSymb ()
 controlFlowUpdate (RetInst{ retInstValue = Just val }, _) = do

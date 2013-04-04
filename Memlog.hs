@@ -1,4 +1,4 @@
-module Memlog(MemlogOp(..), AddrOp(..), AddrEntry(..), AddrEntryType(..), AddrFlag(..), parseMemlog, associateFuncs, MemlogMap) where
+module Memlog(MemlogOp(..), AddrOp(..), AddrEntry(..), AddrEntryType(..), AddrFlag(..), parseMemlog, associateFuncs, MemlogList, Interesting) where
 
 import Control.Applicative
 import Control.Monad(liftM)
@@ -7,8 +7,10 @@ import Control.Monad.Trans.Class(lift)
 import Control.Monad.Trans.Maybe
 import Data.Binary.Get(Get, runGet, getWord32host, getWord64host, skip)
 import Data.LLVM.Types
+import Data.Maybe(isJust, fromMaybe)
 import Data.Word(Word32, Word64)
 import Text.Printf(printf)
+import Debug.Trace
 
 import qualified Data.ByteString.Lazy as B
 import qualified Data.List as L
@@ -58,7 +60,6 @@ getMemlogEntry = do
         0 -> AddrMemlogOp <$> getAddrOp <*> getAddrEntry
         1 -> BranchOp <$> getWord32host <* skip 28
         2 -> SelectOp <$> getBool <* skip 28
-    -- traceShow out $ return out
     return out
 
 getBool :: Get Bool
@@ -85,14 +86,17 @@ getAddrFlag = do
         3 -> FuncargFlag
         f -> error ("Parse error on flag " ++ show f)
 
-type MemlogMap = M.Map BasicBlock [(Instruction, Maybe MemlogOp)]
+type MemlogList = [(BasicBlock, [(Instruction, Maybe MemlogOp)])]
 
 -- Monads for doing the association.
 
 -- We always keep track of the MemlogOps which are left, in the inner OpContext monad.
 type OpContext = State [MemlogOp]
 -- Across basic blocks, we keep track of the MemlogOps for each block.
-type MemlogContext = StateT (MemlogMap, S.Set String) OpContext
+-- The Maybe keeps track of whether we are actually keeping track
+-- (i.e. this is during user code, not loading code)
+-- The list is kept reversed for efficiency reasons.
+type MemlogContext = StateT (Maybe MemlogList) OpContext
 -- Inside a basic block, watch out to see if we run into a control-flow instruction.
 type FuncOpContext = StateT (Maybe BasicBlock) OpContext
 memlogPop :: FuncOpContext (Maybe MemlogOp)
@@ -143,20 +147,25 @@ associateMemlogWithFunc func = addBlock $ head $ functionBody func
           addBlock block = do
               ops <- lift get
               (associated, nextBlock) <- lift $ runStateT (associateBasicBlock block) Nothing
-              (map, funcNames) <- get
-              if S.member (identifierAsString $ functionName func) funcNames
-                  then put (M.insert block associated map, funcNames)
-                  else return ()
+              maybeRevMemlogList <- get
+              case maybeRevMemlogList of
+                  Just revMemlogList -> 
+                      put $ Just $ (block, associated) : revMemlogList
+                  _ -> return ()
               case nextBlock of
                   Just nextBlock' -> addBlock nextBlock'
                   Nothing -> return ()
 
-associateFuncs :: [MemlogOp] -> S.Set String -> [Function] -> MemlogMap
-associateFuncs ops funcNames funcs = map
-    where ((map, _), leftoverOps) = runState inner ops
-          inner = execStateT (mapM_ associateMemlogWithFunc funcs) (M.empty, funcNames)
+type Interesting = ([Function], [Function], [Function])
 
-showAssociated :: MemlogMap -> String
-showAssociated theMap = L.intercalate "\n\n" $ map showBlock $ M.toList theMap
-    where showBlock (block, list) = show (basicBlockName block) ++ ":\n" ++ (L.intercalate "\n" $ map showInstOp list)
+associateFuncs :: [MemlogOp] -> Interesting -> MemlogList
+associateFuncs ops (before, middle, _) = reverse revMemlogList
+    where revMemlogList = fromMaybe (error "No memlog list") maybeRevMemlogList
+          (maybeRevMemlogList, leftoverOps) = runState (beforeM >> middleM) ops
+          beforeM = execStateT (mapM_ associateMemlogWithFunc before) Nothing
+          middleM = execStateT (mapM_ associateMemlogWithFunc middle) $ Just []
+
+showAssociated :: MemlogList -> String
+showAssociated theList = L.intercalate "\n\n" $ map showBlock theList
+    where showBlock (block, list) = show (functionName $ basicBlockFunction block) ++ ":\n" ++ (L.intercalate "\n" $ map showInstOp list)
           showInstOp (inst, maybeOp) = show inst ++ " => " ++ show maybeOp

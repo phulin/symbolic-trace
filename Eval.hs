@@ -431,30 +431,19 @@ infoUpdaters = [ exprUpdate, storeUpdate, controlFlowUpdate, nullUpdate ]
 updateInfo :: (Instruction, Maybe MemlogOp) -> Symbolic ()
 updateInfo instOp@(inst, _) = void $ runMaybeT $ foldl1 (<||>) infoUpdaters instOp
 
-runBlock :: MemlogMap -> BasicBlock -> Symbolic ()
-runBlock memlogMap block = do
-    mapM updateInfo instOpList
-    nextBlock <- getNextBlock
-    case nextBlock of
-        Just block -> runBlock memlogMap block
-        Nothing -> return ()
-    where instOpList = M.findWithDefault (error $ "Couldn't find basic block instruction list for " ++ show (functionName $ basicBlockFunction block) ++ show (basicBlockName block)) block memlogMap
+runBlock :: (BasicBlock, [(Instruction, Maybe MemlogOp)]) -> Symbolic ()
+runBlock (block, instOpList) = do
+    putCurrentFunction $ basicBlockFunction block 
+    mapM_ updateInfo instOpList
 
 isMemLoc :: Loc -> Bool
 isMemLoc MemLoc{} = True
 isMemLoc _ = False
 
--- Run a single LLVM function - equivalently, a basic block in the guest code.
-runFunction :: MemlogMap -> Function -> Symbolic ()
--- runFunction memlogMap initialInfo f = initialInfo `seq` trace ("\n\n" ++ show (functionName f)) $ symbolicInfo state
-runFunction memlogMap f = do
-    putCurrentFunction f
-    runBlock memlogMap $ head $ functionBody f
-
-runFunctions :: MemlogMap -> [Function] -> SymbolicState
-runFunctions memlogMap fs = execState computation initialState
-    where computation = mapM_ (runFunction memlogMap) fs
-          initialState = noSymbolicState{ symbolicFunction = head fs }
+runBlocks :: MemlogList -> SymbolicState
+runBlocks memlogList = execState computation initialState
+    where computation = mapM_ runBlock memlogList
+          initialState = noSymbolicState{ symbolicFunction = basicBlockFunction $ fst $ head memlogList }
 
 usesEsp :: Expr -> Bool
 usesEsp = foldExpr folders
@@ -481,26 +470,26 @@ showInfo = unlines . map showEach . filter doShow . M.toList
           doShowExpr InputExpr{} = False
           doShowExpr expr = not $ usesEsp expr
 
-interesting :: [String] -> [String]
-interesting fs = L.dropWhileEnd boring $ dropWhile boring fs
-    where boring = not . L.isInfixOf "main"
+interesting :: [Function] -> Interesting
+interesting fs = (before, reverse revOurs, reverse revAfter)
+    where boring = not . L.isInfixOf "main" . identifierAsString . functionName
+          (before, afterFirst) = span boring fs
+          revAfterFirst = reverse afterFirst
+          (revAfter, revOurs) = span boring revAfterFirst
 
 main :: IO ()
 main = do
     (Right theMod) <- parseLLVMFile defaultParserOptions "/tmp/llvm-mod.bc"
     funcNameList <- lines <$> readFile "/tmp/llvm-functions.log"
-    let mainName = head $ filter (L.isInfixOf "main") funcNameList
     let findFunc name = fromMaybe (error $ "Couldn't find function " ++ name) $ findFunctionByName theMod name
     let funcList = map findFunc funcNameList
-    let interestingNames = interesting funcNameList
-    let interestingNameSet = S.fromList interestingNames
-    let interestingFuncs = map findFunc interestingNames
+    let interestingFuncs = interesting funcList
     memlog <- parseMemlog
-    let associated = associateFuncs memlog interestingNameSet funcList
+    let associated = associateFuncs memlog interestingFuncs
     -- putStrLn $ showAssociated associated
-    let state = runFunctions associated interestingFuncs
-    let warnings = symbolicWarnings state
-    let messages = symbolicMessages state
+    let state = runBlocks $! associated
+    let warnings = symbolicWarnings $! state
+    let messages = symbolicMessages $! state
     when (not $ null warnings) $ do
         putStrLn "Warnings:"
         putStr " - "

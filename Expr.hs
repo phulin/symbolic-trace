@@ -188,7 +188,7 @@ simplify (MulExpr t e1 e2) = MulExpr t (simplify e1) (simplify e2)
 simplify (DivExpr t e1 e2) = DivExpr t (simplify e1) (simplify e2)
 simplify (RemExpr t e1 e2) = RemExpr t (simplify e1) (simplify e2)
 simplify (ShlExpr t e1 (ILitExpr i))
-    = MulExpr t (simplify e1) (ILitExpr $ 2 ^ i)
+    | i >= 0 = MulExpr t (simplify e1) (ILitExpr $ 2 ^ i)
 simplify (ShlExpr t e1 e2) = ShlExpr t (simplify e1) (simplify e2)
 simplify (LshrExpr t e1 e2) = LshrExpr t (simplify e1) (simplify e2)
 simplify (AshrExpr _ (ILitExpr 0) _) = ILitExpr 0

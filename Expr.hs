@@ -195,6 +195,9 @@ simplify (AshrExpr _ (ILitExpr 0) _) = ILitExpr 0
 simplify (AshrExpr t e1 e2) = AshrExpr t (simplify e1) (simplify e2)
 simplify (AndExpr t (ILitExpr a) (ILitExpr b)) = ILitExpr $ a .&. b
 simplify (AndExpr _ (ZExtExpr _ e@(LoadExpr Int8T _ _)) (ILitExpr 255)) = simplify e
+simplify (AndExpr Int32T e (ILitExpr 0xFFFFFFFF)) = simplify e
+simplify (AndExpr Int64T e (ILitExpr 0xFFFFFFFF))
+    = ZExtExpr Int64T $ TruncExpr Int32T $ simplify e
 simplify (AndExpr t e1 e2) = AndExpr t (simplify e1) (simplify e2)
 simplify (OrExpr t (ILitExpr a) (ILitExpr b)) = ILitExpr $ a .|. b
 simplify (OrExpr t e1 e2) = OrExpr t (simplify e1) (simplify e2)
@@ -224,6 +227,7 @@ simplify (BinaryHelperExpr t id e1 e2)
     | identifierAsString id == "helper_imulq_T0_T1" = MulExpr t (simplify e1) (simplify e2)
 simplify (BinaryHelperExpr t id e1 e2) = BinaryHelperExpr t id (simplify e1) (simplify e2)
 simplify (CastHelperExpr t id e) = CastHelperExpr t id (simplify e)
+simplify (ICmpExpr p e1 e2) = ICmpExpr p (simplify e1) (simplify e2)
 simplify e = e
 
 -- Simple type system

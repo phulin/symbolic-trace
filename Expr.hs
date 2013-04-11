@@ -240,6 +240,13 @@ simplify (BinaryHelperExpr t id e1 e2)
     | identifierAsString id == "helper_imulq_T0_T1" = MulExpr t (simplify e1) (simplify e2)
 simplify (BinaryHelperExpr t id e1 e2) = BinaryHelperExpr t id (simplify e1) (simplify e2)
 simplify (CastHelperExpr t id e) = CastHelperExpr t id (simplify e)
+simplify (ICmpExpr p (SubExpr _ e1 e2) (ILitExpr 0))
+    = ICmpExpr p (simplify e1) (simplify e2)
+simplify (ICmpExpr ICmpEq (XorExpr _ e1 e2) (ILitExpr 0))
+    = ICmpExpr ICmpEq (simplify e1) (simplify e2)
+simplify (ICmpExpr p (AndExpr _ e1 e2) (ILitExpr 0))
+    | e1 == e2 && (p == ICmpEq || p == ICmpNe)
+        = ICmpExpr ICmpEq (simplify e1) (ILitExpr 0)
 simplify (ICmpExpr p e1 e2) = ICmpExpr p (simplify e1) (simplify e2)
 simplify e = e
 

@@ -220,6 +220,14 @@ valueContentToExpr val = lift (warning ("Couldn't find expr for " ++ show val)) 
 valueToExpr :: Value -> BuildExpr Expr
 valueToExpr = valueContentToExpr . valueContent
 
+lookupValue :: Value -> BuildExpr Expr
+lookupValue val = do
+    expr <- valueToExpr val
+    loc <- case expr of
+        InputExpr _ loc' -> return loc'
+        _ -> fail ""
+    lift $ valueAt loc
+
 binaryInstToExprConstructor :: Instruction -> BuildExpr (ExprT -> Expr -> Expr -> Expr)
 binaryInstToExprConstructor AddInst{} = return AddExpr
 binaryInstToExprConstructor SubInst{} = return SubExpr
@@ -263,7 +271,7 @@ castInstToExpr inst = do
     return $ exprConstructor (exprTOfInst inst) value
 
 loadInstToExpr :: (Instruction, Maybe MemlogOp) -> BuildExpr Expr
-loadInstToExpr (inst@LoadInst{ loadAddress = addr },
+loadInstToExpr (inst@LoadInst{ loadAddress = addrValue },
                 Just (AddrMemlogOp LoadOp addrEntry)) = do
     info <- lift getInfo
     let typ = exprTOfInst inst
@@ -273,7 +281,9 @@ loadInstToExpr (inst@LoadInst{ loadAddress = addr },
             expr <- (locExpr <$> maybeToM (M.lookup (MemLoc addrEntry) info)) <|>
                     (LoadExpr typ addrEntry <$> (lift $ generateName typ addrEntry))
             Just currentIP <- lift getCurrentIP
-            lift $ message $ printf "LOAD  (%x): %s <=== %s" currentIP (show expr) (pretty addrEntry)
+            addrString <- (show <$> lookupValue addrValue) <|>
+                          return "unknown"
+            lift $ message $ printf "LOAD  (%x): %s <=== %s; %s" currentIP (show expr) (pretty addrEntry) addrString
             return expr
 loadInstToExpr _ = fail ""
 

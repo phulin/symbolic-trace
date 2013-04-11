@@ -45,7 +45,7 @@ data SymbolicState = SymbolicState {
         -- Map of names for free variables: loads from uninitialized memory
         symbolicVarNameMap :: M.Map (ExprT, AddrEntry) String,
         symbolicCurrentIP :: Maybe Word64,
-        symbolicWarnings :: [String],
+        symbolicWarnings :: [(Maybe Word64, String)],
         symbolicMessages :: [String]
     } deriving (Eq, Ord, Show)
 -- Symbolic is our fundamental monad: it holds state about control flow and
@@ -86,7 +86,14 @@ generateName _ _ = return Nothing
 warning :: String -> Symbolic ()
 warning warn = do
     warnings <- symbolicWarnings <$> get
-    modify (\s -> s{ symbolicWarnings = warnings ++ [warn] })
+    ip <- getCurrentIP
+    modify (\s -> s{ symbolicWarnings = warnings ++ [(ip, warn)] })
+showWarning :: (Maybe Word64, String) -> String
+showWarning (ip, s) = printf " - (%s) %s" stringIP s
+    where stringIP = case ip of
+              Just realIP -> printf "%x" realIP
+              Nothing -> "unknown"
+
 message :: String -> Symbolic ()
 message msg = do
     messages <- symbolicMessages <$> get
@@ -500,8 +507,7 @@ main = do
     let messages = symbolicMessages $! state
     when (not $ null warnings) $ do
         putStrLn "Warnings:"
-        putStr " - "
-        putStrLn $ L.intercalate "\n - " warnings
+        putStrLn $ L.intercalate "\n" $ map showWarning warnings
         putStrLn ""
     when (not $ null messages) $ do
         putStrLn "Messages:"

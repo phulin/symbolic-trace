@@ -442,7 +442,8 @@ controlFlowUpdate inst@(BranchInst{ branchTrueTarget = trueTarget,
         condExpr <- buildExprToMaybeExpr $ valueToExpr cond
         currentIP <- fromJust <$> lift getCurrentIP
         when (currentIP > (2 ^ 32)) $ fail ""
-        lift $ message $ printf "BRANCH (%x): %s\n" currentIP (show condExpr)) <|> return ()
+        let resultString = if idx == 0 then "TRUE" else "FALSE"
+        lift $ message $ printf "BRANCH (%x): %s; %s\n" currentIP (show condExpr) resultString) <|> return ()
     lift $ makeValueRelevant $ cond
     case idx of
         0 -> lift $ putNextBlock $ Just trueTarget

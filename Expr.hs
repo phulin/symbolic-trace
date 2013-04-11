@@ -32,6 +32,19 @@ instance Pretty ExprT where
     pretty FloatT = "flt"
     pretty DoubleT = "dbl"
 
+instance Pretty CmpPredicate where
+    pretty ICmpEq = "=="
+    pretty ICmpNe = "!="
+    pretty ICmpSgt = ">s"
+    pretty ICmpSge = ">=s"
+    pretty ICmpSlt = "<s"
+    pretty ICmpSle = "<=s"
+    pretty ICmpUgt = ">u"
+    pretty ICmpUge = ">=u"
+    pretty ICmpUlt = "<u"
+    pretty ICmpUle = "<=u"
+    pretty p = "?" ++ (show p) ++ "?"
+
 data Expr =
     AddExpr ExprT Expr Expr |
     SubExpr ExprT Expr Expr |
@@ -96,7 +109,7 @@ instance Show Expr where
     show (LoadExpr _ addr _) = printf "*%s" (pretty addr)
     show (BinaryHelperExpr _ id e1 e2) = printf "%s(%s, %s)" (show id) (show e1) (show e2)
     show (CastHelperExpr _ id e) = printf "%s(%s)" (show id) (show e)
-    show (ICmpExpr pred e1 e2) = printf "ICmp(%s, %s, %s)" (show pred) (show e1) (show e2)
+    show (ICmpExpr pred e1 e2) = printf "%s %s %s" (show e1) (pretty pred) (show e2)
     show (ILitExpr i) = show i
     show (FLitExpr f) = show f
     show (InputExpr _ loc) = printf "(%s)" (show loc)

@@ -206,19 +206,16 @@ instructionToExpr inst = do
         IrrelevantExpr -> irrelevant
         e -> return e
 
-valueContentToExpr :: ValueContent -> BuildExpr Expr
-valueContentToExpr (ConstantC (ConstantFP _ _ value)) = return $ FLitExpr value 
-valueContentToExpr (ConstantC (ConstantInt _ _ value)) = return $ ILitExpr value
-valueContentToExpr (ConstantC (ConstantValue{ constantInstruction = inst })) = instructionToExpr inst
-valueContentToExpr (InstructionC inst) = instructionToExpr inst
-valueContentToExpr (ArgumentC (Argument{ argumentName = name,
+valueToExpr :: Value -> BuildExpr Expr
+valueToExpr (ConstantC (ConstantFP _ _ value)) = return $ FLitExpr value 
+valueToExpr (ConstantC (ConstantInt _ _ value)) = return $ ILitExpr value
+valueToExpr (ConstantC (ConstantValue{ constantInstruction = inst })) = instructionToExpr inst
+valueToExpr (InstructionC inst) = instructionToExpr inst
+valueToExpr (ArgumentC (Argument{ argumentName = name,
                                          argumentType = argType })) = do
     func <- lift getCurrentFunction
     return $ InputExpr (typeToExprT argType) (IdLoc func name)
-valueContentToExpr val = lift (warning ("Couldn't find expr for " ++ show val)) >> fail ""
-
-valueToExpr :: Value -> BuildExpr Expr
-valueToExpr = valueContentToExpr . valueContent
+valueToExpr val = lift (warning ("Couldn't find expr for " ++ show val)) >> fail ""
 
 lookupValue :: Value -> BuildExpr Expr
 lookupValue val = do
@@ -368,16 +365,13 @@ memInstToExprs = [ loadInstToExpr ]
 -- if the monad comes back Nothing.
 type MaybeSymb = MaybeT (Symbolic)
 
-makeValueContentRelevant :: ValueContent -> Symbolic ()
-makeValueContentRelevant (InstructionC inst) = do
+makeValueRelevant :: Value -> Symbolic ()
+makeValueRelevant (InstructionC inst) = do
     func <- getCurrentFunction
     case instructionName inst of
         Just id -> makeRelevant $ IdLoc func id
         _ -> return ()
-makeValueContentRelevant _ = return ()
-
-makeValueRelevant :: Value -> Symbolic ()
-makeValueRelevant = makeValueContentRelevant . valueContent
+makeValueRelevant _ = return ()
 
 storeUpdate :: (Instruction, Maybe MemlogOp) -> MaybeSymb ()
 storeUpdate (inst@StoreInst{ storeIsVolatile = False,
@@ -505,7 +499,7 @@ interesting fs = (before, reverse revOurs, reverse revAfter)
 
 main :: IO ()
 main = do
-    (Right theMod) <- parseLLVMFile defaultParserOptions "/tmp/llvm-mod.bc"
+    theMod <- parseLLVMFile defaultParserOptions "/tmp/llvm-mod.bc"
     funcNameList <- lines <$> readFile "/tmp/llvm-functions.log"
     let findFunc name = fromMaybe (error $ "Couldn't find function " ++ name) $ findFunctionByName theMod name
     let funcList = map findFunc funcNameList

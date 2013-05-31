@@ -463,6 +463,7 @@ failedUpdate instOp = lift (warnInstOp instOp) >> fail ""
 controlFlowUpdate :: (Instruction, Maybe MemlogOp) -> MaybeSymb ()
 controlFlowUpdate (RetInst{ retInstValue = Just val }, _)
     = lift $ makeValueRelevant val
+controlFlowUpdate (RetInst{}, _) = return ()
 controlFlowUpdate (UnconditionalBranchInst{}, _) = return ()
 controlFlowUpdate (BranchInst{ branchTrueTarget = trueTarget,
                                     branchFalseTarget = falseTarget,

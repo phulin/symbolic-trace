@@ -1,4 +1,4 @@
-module Memlog(MemlogOp(..), AddrOp(..), AddrEntry(..), AddrEntryType(..), AddrFlag(..), parseMemlog, associateFuncs, MemlogList, Interesting) where
+module Memlog(MemlogOp(..), AddrOp(..), AddrEntry(..), AddrEntryType(..), AddrFlag(..), parseMemlog, associateFuncs, shouldIgnoreInst, pairListFind, InstOpList, MemlogList, Interesting) where
 
 import Control.Applicative
 import Control.Monad(liftM)
@@ -21,9 +21,14 @@ import Instances
 import Pretty
 
 -- Haskell version of C dynamic log structs
-data MemlogOp = AddrMemlogOp AddrOp AddrEntry | BranchOp Word32 | SelectOp Bool
+data MemlogOp = AddrMemlogOp AddrOp AddrEntry |
+                BranchOp Word32 |
+                SelectOp Word32 |
+                SwitchOp Word32 | 
+                ExceptionOp |
+                HelperFuncOp MemlogList -- For calls out to helper functions
     deriving (Eq, Ord, Show)
-data AddrOp = LoadOp | StoreOp | BranchAddrOp | SelectAddrOp
+data AddrOp = LoadOp | StoreOp | BranchAddrOp | SelectAddrOp | SwitchAddrOp
     deriving (Eq, Ord, Show, Enum)
 data AddrEntry = AddrEntry { addrType :: AddrEntryType
                            , addrVal :: Word64
@@ -59,7 +64,10 @@ getMemlogEntry = do
     out <- case entryType of
         0 -> AddrMemlogOp <$> getAddrOp <*> getAddrEntry
         1 -> BranchOp <$> getWord32host <* skip 28
-        2 -> SelectOp <$> getBool <* skip 28
+        2 -> SelectOp <$> getWord32host <* skip 28
+        3 -> SwitchOp <$> getWord32host <* skip 28
+        4 -> ExceptionOp <$ skip 28
+        _ -> error "Unknown entry type"
     return out
 
 getBool :: Get Bool
@@ -86,7 +94,8 @@ getAddrFlag = do
         3 -> FuncargFlag
         f -> error ("Parse error on flag " ++ show f)
 
-type MemlogList = [(BasicBlock, [(Instruction, Maybe MemlogOp)])]
+type InstOpList = [(Instruction, Maybe MemlogOp)]
+type MemlogList = [(BasicBlock, InstOpList)]
 
 -- Monads for doing the association.
 
@@ -116,28 +125,63 @@ memlogPopWithError errMsg = do
 memlogPopWithErrorInst :: Instruction -> FuncOpContext MemlogOp
 memlogPopWithErrorInst inst = memlogPopWithError $ "Failed on block " ++ (show $ instructionBasicBlock inst)
 
-associateBasicBlock :: BasicBlock -> FuncOpContext [(Instruction, Maybe MemlogOp)]
-associateBasicBlock = mapM associateInstWithCopy . basicBlockInstructions
+t x = traceShow x x
+
+associateBasicBlock :: BasicBlock -> FuncOpContext InstOpList
+associateBasicBlock block = mapM associateInstWithCopy $ basicBlockInstructions block
     where associateInstWithCopy inst = do
               maybeOp <- associateInst inst
               return (inst, maybeOp)
 
+shouldIgnoreInst :: Instruction -> Bool
+shouldIgnoreInst AllocaInst{} = True
+shouldIgnoreInst CallInst{ callFunction = ExternalFunctionC func}
+    | (identifierAsString $ externalFunctionName func) == "log_dynval" = True
+shouldIgnoreInst StoreInst{ storeIsVolatile = True } = True
+shouldIgnoreInst inst = False
+
+pairListFind :: (a -> Bool) -> b -> [(a, b)] -> b
+pairListFind test def list = foldr check def list
+    where check (key, val) _
+              | test key = val
+          check _ val = val
+
+findSwitchTarget :: BasicBlock -> Word32 -> [(Value, BasicBlock)] -> BasicBlock
+findSwitchTarget defaultTarget idx casesList
+    = pairListFind test defaultTarget casesList
+    where test (ConstantC (ConstantInt{ constantIntValue = int }))
+              | int == fromIntegral idx = True
+          test _ = False
+
 associateInst :: Instruction -> FuncOpContext (Maybe MemlogOp)
+associateInst inst
+    | shouldIgnoreInst inst = return Nothing
 associateInst inst@LoadInst{} = liftM Just $ memlogPopWithErrorInst inst
-associateInst inst@StoreInst{ storeIsVolatile = volatile }
-    = if volatile
-        then return Nothing
-        else liftM Just $ memlogPopWithErrorInst inst
+associateInst inst@StoreInst{ storeIsVolatile = False }
+    = liftM Just $ memlogPopWithErrorInst inst
+associateInst inst@SelectInst{} = liftM Just $ memlogPopWithErrorInst inst
 associateInst inst@BranchInst{} = do
     op <- memlogPopWithErrorInst inst
     case op of
         BranchOp 0 -> put $ Just $ branchTrueTarget inst
         BranchOp 1 -> put $ Just $ branchFalseTarget inst
-        _ -> return ()
+        _ -> fail "Expected branch operation"
     return $ Just op
-associateInst inst@UnconditionalBranchInst{ unconditionalBranchTarget = target} = do
+associateInst inst@SwitchInst{ switchDefaultTarget = defaultTarget,
+                               switchCases = casesList } = do
+    op <- memlogPopWithErrorInst inst
+    case op of
+        SwitchOp idx -> put $ Just $ findSwitchTarget defaultTarget idx casesList
+        _ ->  fail "Expected switch operation"
+    return $ Just op
+associateInst inst@UnconditionalBranchInst{ unconditionalBranchTarget = target } = do
     put $ Just target
     liftM Just $ memlogPopWithErrorInst inst
+associateInst CallInst{ callFunction = FunctionC func } = do
+    lift $ do -- inside OpContext
+        maybeRevMemlog <- execStateT (associateMemlogWithFunc func) $ Just []
+        let revMemlog = fromMaybe (error "no memlog!") maybeRevMemlog
+        return $ Just $ HelperFuncOp $ reverse revMemlog
 associateInst RetInst{} = put Nothing >> return Nothing
 associateInst _ = return Nothing
 
@@ -166,6 +210,8 @@ associateFuncs ops (before, middle, _) = reverse revMemlogList
           middleM = execStateT (mapM_ associateMemlogWithFunc middle) $ Just []
 
 showAssociated :: MemlogList -> String
-showAssociated theList = L.intercalate "\n\n" $ map showBlock theList
-    where showBlock (block, list) = show (functionName $ basicBlockFunction block) ++ ":\n" ++ (L.intercalate "\n" $ map showInstOp list)
-          showInstOp (inst, maybeOp) = show inst ++ " => " ++ show maybeOp
+showAssociated theList = L.intercalate "\n\n\n" $ map showBlock theList
+    where showBlock (block, list) = show (functionName $ basicBlockFunction block) ++ ":" ++ show (basicBlockName block) ++ ":\n" ++ (L.intercalate "\n" $ map showInstOp list)
+          showInstOp (inst, maybeOp) = show inst ++ " =>\n\t" ++ showOp maybeOp
+          showOp (Just (HelperFuncOp helperMemlog)) = "HELPER: " ++ showAssociated helperMemlog
+          showOp maybeOp = show maybeOp

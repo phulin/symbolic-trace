@@ -207,7 +207,7 @@ instructionToExpr inst = do
     func <- lift getCurrentFunction
     value <- lift $ valueAt (IdLoc func name)
     case value of
-        IrrelevantExpr -> irrelevant
+        IrrelevantExpr -> return IrrelevantExpr -- HACK!!! figure out why this is happening
         e -> return e
 
 valueToExpr :: Value -> BuildExpr Expr

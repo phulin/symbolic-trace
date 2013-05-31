@@ -92,9 +92,9 @@ instance Show Expr where
     show (AndExpr _ e1 e2) = printf "(%s & %s)" (show e1) (show e2)
     show (OrExpr _ e1 e2) = printf "(%s | %s)" (show e1) (show e2)
     show (XorExpr _ e1 e2) = printf "(%s ^ %s)" (show e1) (show e2)
-    show (TruncExpr _ e) = printf "%s" (show e)
-    show (ZExtExpr _ e) = printf "%s" (show e)
-    show (SExtExpr _ e) = printf "%s" (show e)
+    show (TruncExpr _ e) = printf "T(%s)" (show e)
+    show (ZExtExpr _ e) = printf "Z(%s)" (show e)
+    show (SExtExpr _ e) = printf "S(%s)" (show e)
     show (FPTruncExpr _ e) = printf "FPTrunc(%s)" (show e)
     show (FPExtExpr _ e) = printf "FPExt(%s)" (show e)
     show (FPToSIExpr _ e) = printf "FPToSI(%s)" (show e)
@@ -215,6 +215,10 @@ simplify (AndExpr t e1 e2) = AndExpr t (simplify e1) (simplify e2)
 simplify (OrExpr t (ILitExpr a) (ILitExpr b)) = ILitExpr $ a .|. b
 simplify (OrExpr t e1 e2) = OrExpr t (simplify e1) (simplify e2)
 simplify (XorExpr t e1 e2) = XorExpr t (simplify e1) (simplify e2)
+-- FIXME: HACK!!!!
+simplify (ZExtExpr _ e) = simplify e
+simplify (SExtExpr _ e) = simplify e
+simplify (TruncExpr _ e) = simplify e
 simplify (TruncExpr _ (ZExtExpr _ e)) = simplify e
 simplify (TruncExpr _ (SExtExpr _ e)) = simplify e
 simplify expr@(TruncExpr t e@(ILitExpr int))

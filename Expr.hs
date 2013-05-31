@@ -85,7 +85,7 @@ instance Show Expr where
     show (SubExpr _ e1 e2) = printf "(%s - %s)" (show e1) (show e2)
     show (MulExpr _ e1 e2) = printf "(%s * %s)" (show e1) (show e2)
     show (DivExpr _ e1 e2) = printf "(%s / %s)" (show e1) (show e2)
-    show (RemExpr _ e1 e2) = printf "(%s % %s)" (show e1) (show e2)
+    show (RemExpr _ e1 e2) = printf "(%s %% %s)" (show e1) (show e2)
     show (ShlExpr _ e1 e2) = printf "(%s << %s)" (show e1) (show e2)
     show (LshrExpr _ e1 e2) = printf "(%s L>> %s)" (show e1) (show e2)
     show (AshrExpr _ e1 e2) = printf "(%s A>> %s)" (show e1) (show e2)

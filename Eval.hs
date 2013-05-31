@@ -216,9 +216,12 @@ valueToExpr (ConstantC (ConstantInt _ _ value)) = return $ ILitExpr value
 valueToExpr (ConstantC (ConstantValue{ constantInstruction = inst })) = instructionToExpr inst
 valueToExpr (InstructionC inst) = instructionToExpr inst
 valueToExpr (ArgumentC (Argument{ argumentName = name,
-                                         argumentType = argType })) = do
+                                  argumentType = argType })) = do
     func <- lift getCurrentFunction
     return $ InputExpr (typeToExprT argType) (IdLoc func name)
+valueToExpr (GlobalVariableC GlobalVariable{ globalVariableName = name }) = do
+    func <- lift getCurrentFunction
+    return $ InputExpr VoidT (IdLoc func name) -- FIXME: get real typing info here
 valueToExpr val = lift (warning ("Couldn't find expr for " ++ show val)) >> fail ""
 
 lookupValue :: Value -> BuildExpr Expr

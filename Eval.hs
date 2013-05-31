@@ -399,7 +399,7 @@ storeUpdate (inst@StoreInst{ storeIsVolatile = False,
     currentIP <- lift getCurrentIP
     if usesEsp value && not (addrFlag addr == IrrelevantFlag) -- || fromJust currentIP >= 2 ^ 32
         then return ()
-        else lift $ message $ printf "STORE (%x): %s ===> %s" (fromMaybe 0 currentIP) (show value) (pretty addr)
+        else lift $ message $ printf "STORE (%s): %s ===> %s" (printIP currentIP) (show value) (pretty addr)
     let locInfo = noLocInfo{ locExpr = value, locOrigin = currentIP }
     lift $ locInfoInsert (MemLoc addr) locInfo
     lift $ makeRelevant $ MemLoc addr
@@ -435,9 +435,11 @@ exprUpdate instOp@(inst, _) = do
               | x == f x = x
               | otherwise = repeatf (n - 1) f $ f x 
 
--- Ignore alloca instructions
 ignoreUpdate :: (Instruction, Maybe MemlogOp) -> MaybeSymb ()
-ignoreUpdate (inst, _) = unless (shouldIgnoreInst inst) $ fail ""
+ignoreUpdate (AllocaInst{}, _) = return ()
+ignoreUpdate (CallInst{ callFunction = ExternalFunctionC func}, _)
+    | (identifierAsString $ externalFunctionName func) == "log_dynval" = return ()
+ignoreUpdate _ = fail ""
 
 warnInstOp :: (Instruction, Maybe MemlogOp) -> Symbolic ()
 warnInstOp (inst, op) = warning $ printf "Couldn't process inst '%s' with op %s" (show inst) (show op)

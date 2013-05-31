@@ -320,27 +320,9 @@ typeBytes (TypeArray count t) = fromIntegral count * typeBytes t
 typeBytes (TypeStruct _ ts _) = sum $ map typeBytes ts
 typeBytes t = error $ printf "Unsupported type %s" (show t)
 
-getAddrExpr :: ExprT -> Expr -> Type -> [Value] -> BuildExpr Expr
-getAddrExpr outT expr _ [] = return expr
-getAddrExpr outT expr typ (idx : idxs) = do
-    index <- case idx of
-        ConstantC (ConstantInt{ constantIntValue = index' }) -> return $ fromIntegral index'
-        _ -> lift (warning $ "Value failure: " ++ show idx) >> fail ""
-    (offset, typ') <- case typ of
-        TypePointer t _ -> return (index * fromIntegral (typeBytes t), t)
-        TypeArray _ t -> return (index * fromIntegral (typeBytes t), t)
-        TypeStruct _ ts _ -> return (fromIntegral $ sum $ map typeBytes $ take index ts, ts !! index)
-        _ -> lift (warning $ "Type failure: " ++ show typ) >> fail ""
-    (AddExpr outT $ ILitExpr $ fromIntegral offset) <$> getAddrExpr outT expr typ' idxs
-
 gepInstToExpr :: Instruction -> BuildExpr Expr
-gepInstToExpr inst@GetElementPtrInst{ _instructionType = instType,
-                                      getElementPtrValue = value,
-                                      getElementPtrIndices = indices } = do
-    valueExpr <- valueToExpr value
-    let outT = exprTOfInst inst
-    let typ = valueType value
-    IntToPtrExpr PtrT <$> getAddrExpr outT valueExpr typ indices
+-- FIXME: this is also a hack.
+gepInstToExpr GetElementPtrInst{} = return IrrelevantExpr
 gepInstToExpr _ = fail ""
 
 helperInstToExpr :: Instruction -> BuildExpr Expr

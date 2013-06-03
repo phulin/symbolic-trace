@@ -344,7 +344,6 @@ typeBytes (TypeStruct _ ts _) = sum $ map typeBytes ts
 typeBytes t = error $ printf "Unsupported type %s" (show t)
 
 gepInstToExpr :: Instruction -> BuildExpr Expr
--- FIXME: this is also a hack.
 gepInstToExpr GetElementPtrInst{} = return GEPExpr
 gepInstToExpr _ = fail ""
 
@@ -434,11 +433,6 @@ exprUpdate instOp@(inst, _) = do
     let builtExpr = (foldl1 (<||>) instToExprs) inst <|>
                     (foldl1 (<||>) memInstToExprs) instOp
     expr <- buildExprToMaybeExpr builtExpr
---     case expr of
---         IrrelevantExpr -> return ()
---         _ -> if not $ usesEsp expr
---             then traceShow (id, expr) $ return ()
---             else return ()
     currentIP <- lift getCurrentIP
     let simplified = repeatf 8 simplify expr
     let locInfo = noLocInfo{ locExpr = simplified, locOrigin = currentIP }
@@ -534,8 +528,6 @@ usesEsp = foldExpr folders
     where falseFolders = constFolders False
           isLoadEsp _ addr _ = pretty addr == "ESP"
           folders = falseFolders{
-              --iLitFolder = const True,
-              --fLitFolder = const True,
               loadFolder = isLoadEsp,
               binaryCombiner = (||)
           }

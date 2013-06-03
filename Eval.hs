@@ -47,7 +47,8 @@ data SymbolicState = SymbolicState {
         symbolicCurrentIP :: Maybe Word64,
         symbolicWarnings :: [(Maybe Word64, String)],
         symbolicMessages :: [String],
-        symbolicSkipRest :: Bool
+        symbolicSkipRest :: Bool,
+        symbolicRetVal :: Maybe Expr
     } deriving (Eq, Ord, Show)
 -- Symbolic is our fundamental monad: it holds state about control flow and
 -- holds our knowledge of machine state.
@@ -64,6 +65,8 @@ getCurrentIP :: Symbolic (Maybe Word64)
 getCurrentIP = symbolicCurrentIP <$> get
 getSkipRest :: Symbolic Bool
 getSkipRest = symbolicSkipRest <$> get
+getRetVal :: Symbolic (Maybe Expr)
+getRetVal = symbolicRetVal <$> get
 putInfo :: Info -> Symbolic ()
 putInfo info = modify (\s -> s{ symbolicInfo = info })
 putPreviousBlock :: Maybe BasicBlock -> Symbolic ()
@@ -72,6 +75,7 @@ putCurrentFunction :: Function -> Symbolic ()
 putCurrentFunction f = modify (\s -> s{ symbolicFunction = f })
 putCurrentIP :: Maybe Word64 -> Symbolic ()
 putCurrentIP newIP = modify (\s -> s{ symbolicCurrentIP = newIP })
+putRetVal retVal = modify (\s -> s{ symbolicRetVal = retVal })
 
 skipRest :: Symbolic ()
 skipRest = modify (\s -> s{ symbolicSkipRest = True })
@@ -149,7 +153,8 @@ noSymbolicState = SymbolicState{ symbolicInfo = M.empty,
                                  symbolicCurrentIP = Nothing,
                                  symbolicWarnings = [],
                                  symbolicMessages = [],
-                                 symbolicSkipRest = False }
+                                 symbolicSkipRest = False,
+                                 symbolicRetVal = Nothing }
 
 valueAt :: Loc -> Symbolic Expr
 valueAt loc = exprFindInfo (InputExpr Int64T loc) loc
@@ -456,15 +461,17 @@ failedUpdate :: (Instruction, Maybe MemlogOp) -> MaybeSymb ()
 failedUpdate instOp = lift (warnInstOp instOp) >> fail ""
 
 controlFlowUpdate :: (Instruction, Maybe MemlogOp) -> MaybeSymb ()
-controlFlowUpdate (RetInst{ retInstValue = Just val }, _)
-    = lift $ makeValueRelevant val
+controlFlowUpdate (RetInst{ retInstValue = Just val }, _) = do
+    lift $ makeValueRelevant val
+    expr <- buildExprToMaybeExpr (valueToExpr val)
+    lift $ putRetVal $ Just expr
 controlFlowUpdate (RetInst{}, _) = return ()
 controlFlowUpdate (UnconditionalBranchInst{}, _) = return ()
 controlFlowUpdate (BranchInst{ branchTrueTarget = trueTarget,
                                branchFalseTarget = falseTarget,
                                branchCondition = cond },
                    Just (BranchOp idx)) = do
-    (do
+    optional $ do
         condExpr <- buildExprToMaybeExpr $ valueToExpr cond
         maybeCurrentIP <- lift getCurrentIP
         currentIP <- case maybeCurrentIP of
@@ -473,13 +480,19 @@ controlFlowUpdate (BranchInst{ branchTrueTarget = trueTarget,
                 | currentIP' > 2 ^ 32 -> fail ""
                 | otherwise -> return currentIP'
         let resultString = if idx == 0 then "TRUE" else "FALSE"
-        lift $ message $ printf "BRANCH (%x): %s; %s\n" currentIP (show condExpr) resultString) <|> return ()
+        lift $ message $ printf "BRANCH (%x): %s; %s\n" currentIP (show condExpr) resultString
     lift $ makeValueRelevant $ cond
 controlFlowUpdate (SwitchInst{}, _) = return ()
-controlFlowUpdate (CallInst{}, Just (HelperFuncOp memlog)) = lift $ do
-    currentFunc <- getCurrentFunction -- call stack abstraction
-    runBlocks memlog
-    putCurrentFunction currentFunc
+controlFlowUpdate (inst@CallInst{}, Just (HelperFuncOp memlog)) = do
+    currentFunc <- lift getCurrentFunction -- call stack abstraction
+    maybeRetVal <- lift $ runBlocks memlog
+    optional $ do
+        val <- maybeToM $ maybeRetVal
+        id <- maybeToM $ instructionName inst
+        currentIP <- lift getCurrentIP
+        let locInfo = noLocInfo{ locExpr = val, locOrigin = currentIP }
+        lift $ locInfoInsert (IdLoc currentFunc id) locInfo
+    lift $ putCurrentFunction currentFunc
 controlFlowUpdate (CallInst{ callFunction = ExternalFunctionC func }, _)
     | identifierAsString (externalFunctionName func) == "cpu_loop_exit"
         = lift skipRest
@@ -498,19 +511,23 @@ updateInfo instOp@(inst, _) = do
     skip <- getSkipRest
     unless skip $ void $ runMaybeT $ foldl1 (<||>) infoUpdaters instOp
 
-runBlock :: (BasicBlock, InstOpList) -> Symbolic ()
+runBlock :: (BasicBlock, InstOpList) -> Symbolic (Maybe Expr)
 runBlock (block, instOpList) = do
     putCurrentFunction $ basicBlockFunction block 
+    putRetVal Nothing
     mapM updateInfo instOpList
     clearSkipRest
     putPreviousBlock $ Just block
+    getRetVal
 
 isMemLoc :: Loc -> Bool
 isMemLoc MemLoc{} = True
 isMemLoc _ = False
 
-runBlocks :: MemlogList -> Symbolic ()
-runBlocks = mapM_ runBlock
+runBlocks :: MemlogList -> Symbolic (Maybe Expr)
+runBlocks blocks = do
+    retVals <- mapM runBlock blocks
+    return $ last retVals
 
 usesEsp :: Expr -> Bool
 usesEsp = foldExpr folders
@@ -534,7 +551,7 @@ showInfo = unlines . map showEach . filter doShow . M.toList
           doShowExpr IrrelevantExpr = False
           doShowExpr ILitExpr{} = False
           doShowExpr LoadExpr{} = False
-          doShowExpr InputExpr{} = False
+          doShowExpr InputExpr{} = True
           doShowExpr expr = not $ usesEsp expr
 
 interesting :: [Function] -> Interesting

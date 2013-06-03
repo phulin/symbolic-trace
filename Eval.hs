@@ -322,33 +322,22 @@ typeBytes t = error $ printf "Unsupported type %s" (show t)
 
 gepInstToExpr :: Instruction -> BuildExpr Expr
 -- FIXME: this is also a hack.
-gepInstToExpr GetElementPtrInst{} = return IrrelevantExpr
+gepInstToExpr GetElementPtrInst{} = return GEPExpr
 gepInstToExpr _ = fail ""
 
-helperInstToExpr :: Instruction -> BuildExpr Expr
-helperInstToExpr inst@CallInst{ callFunction = funcValue,
-                                callArguments = funcArgs } = do
-    case valueContent funcValue of
-        ExternalFunctionC (ExternalFunction{ externalFunctionType = funcType,
-                                             externalFunctionName = funcId }) ->
-            if "helper_" `L.isPrefixOf` identifierAsString funcId
-                then case funcArgs of
-                    [] -> lift (warning (printf "Stateful helper %s" (show funcId))) >> fail ""
-                    [(argVal, _)] -> do
-                        argExpr <- valueToExpr argVal
-                        return $ CastHelperExpr (exprTOfInst inst) funcId argExpr
-                    [(argVal1, _), (argVal2, _)] -> do
-                        case funcType of
-                            TypeFunction TypeVoid _ _ ->
-                                lift $ warning $ printf "Stateful binary helper %s" (show funcId)
-                            _ -> return ()
-                        argExpr1 <- valueToExpr argVal1
-                        argExpr2 <- valueToExpr argVal2
-                        return $ BinaryHelperExpr (exprTOfInst inst) funcId argExpr1 argExpr2
-                    _ -> lift (warning (printf "Bad funcArgs: %s(%s)" (show funcId) (show funcArgs))) >> fail ""
-                else fail ""
-        _ -> fail ""
-helperInstToExpr _ = fail ""
+intrinsicToExpr :: Instruction -> BuildExpr Expr
+intrinsicToExpr inst@CallInst{ callFunction = ExternalFunctionC func,
+                               callArguments = argValuePairs }
+    | externalIsIntrinsic func = do
+        args <- mapM valueToExpr $ map fst argValuePairs
+        return $ IntrinsicExpr (exprTOfInst inst) func args
+intrinsicToExpr _ = fail ""
+
+extractInstToExpr inst@ExtractValueInst{ extractValueAggregate = aggr,
+                                         extractValueIndices = [idx] } = do
+    aggrExpr <- valueToExpr aggr
+    return $ ExtractExpr (exprTOfInst inst) idx aggrExpr
+extractInstToExpr _ = fail ""
 
 icmpInstToExpr :: Instruction -> BuildExpr Expr
 icmpInstToExpr inst@ICmpInst{ cmpPredicate = pred,
@@ -373,7 +362,8 @@ instToExprs = [ binaryInstToExpr,
                 castInstToExpr,
                 phiInstToExpr,
                 gepInstToExpr,
-                helperInstToExpr,
+                intrinsicToExpr,
+                extractInstToExpr,
                 icmpInstToExpr ]
 
 memInstToExprs :: [(Instruction, Maybe MemlogOp) -> BuildExpr Expr]

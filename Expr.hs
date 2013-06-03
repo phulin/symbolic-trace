@@ -9,6 +9,8 @@ import Text.Printf(printf)
 import Memlog(AddrEntry(..), AddrEntryType(..))
 import Pretty(Pretty, pretty)
 
+import qualified Data.List as L
+
 data Loc = IdLoc Function Identifier | MemLoc AddrEntry
     deriving (Eq, Ord)
 
@@ -21,6 +23,7 @@ instance Pretty Loc where
     pretty (MemLoc addr) = pretty addr
 
 data ExprT = VoidT | PtrT | Int8T | Int32T | Int64T | FloatT | DoubleT
+    | StructT [ExprT]
     deriving (Eq, Ord, Show)
 
 instance Pretty ExprT where
@@ -77,6 +80,9 @@ data Expr =
     ILitExpr Integer | -- takes any integer type
     FLitExpr Double | -- takes any float type
     InputExpr ExprT Loc |
+    IntrinsicExpr ExprT ExternalFunction [Expr] |
+    ExtractExpr ExprT Int Expr |
+    GEPExpr | -- dummy expression for getelementptr instructions
     IrrelevantExpr
     deriving (Eq, Ord)
 
@@ -113,6 +119,10 @@ instance Show Expr where
     show (ILitExpr i) = show i
     show (FLitExpr f) = show f
     show (InputExpr _ loc) = printf "(%s)" (show loc)
+    show (IntrinsicExpr _ f es) = printf "%s(%s)" (show $ externalFunctionName f)
+        (L.intercalate ", " $ map show es)
+    show (ExtractExpr _ idx e) = printf "%s[%d]" (show e) idx
+    show (GEPExpr) = "GEP"
     show (IrrelevantExpr) = "IRRELEVANT"
 
 data ExprFolders a = ExprFolders {
@@ -165,6 +175,9 @@ foldExpr fs (ICmpExpr pred e1 e2) = binaryCombiner fs (foldExpr fs e1) (foldExpr
 foldExpr fs (ILitExpr i) = iLitFolder fs i
 foldExpr fs (FLitExpr f) = fLitFolder fs f
 foldExpr fs (InputExpr t loc) = inputFolder fs t loc
+foldExpr fs (IntrinsicExpr _ _ args) = foldl1 (binaryCombiner fs) (map (foldExpr fs) args)
+foldExpr fs (ExtractExpr _ _ e) = foldExpr fs e
+foldExpr fs (GEPExpr) = irrelevantFolder fs
 foldExpr fs (IrrelevantExpr) = irrelevantFolder fs
 
 bits :: ExprT -> Int
@@ -252,6 +265,8 @@ simplify (ICmpExpr p (AndExpr _ e1 e2) (ILitExpr 0))
     | e1 == e2 && (p == ICmpEq || p == ICmpNe)
         = ICmpExpr ICmpEq (simplify e1) (ILitExpr 0)
 simplify (ICmpExpr p e1 e2) = ICmpExpr p (simplify e1) (simplify e2)
+simplify (IntrinsicExpr t f es) = IntrinsicExpr t f $ map simplify es
+simplify (ExtractExpr t idx e) = ExtractExpr t idx (simplify e)
 simplify e = e
 
 -- Simple type system
@@ -262,6 +277,7 @@ typeToExprT (TypeInteger 64) = Int32T
 typeToExprT (TypePointer _ _) = PtrT
 typeToExprT (TypeFloat) = FloatT
 typeToExprT (TypeDouble) = DoubleT
+typeToExprT (TypeStruct _ ts _) = StructT $ map typeToExprT ts
 typeToExprT _ = VoidT
 
 exprTOfInst :: Instruction -> ExprT

@@ -405,9 +405,9 @@ storeUpdate (inst@StoreInst{ storeIsVolatile = False,
              (Just (AddrMemlogOp StoreOp addr))) = do
     value <- buildExprToMaybeExpr $ valueToExpr val
     currentIP <- lift getCurrentIP
-    if usesEsp value && not (addrFlag addr == IrrelevantFlag) -- || fromJust currentIP >= 2 ^ 32
-        then return ()
-        else lift $ message $ printf "STORE (%s): %s ===> %s" (printIP currentIP) (show value) (pretty addr)
+    unless (usesEsp value && not (addrFlag addr == IrrelevantFlag)) $
+        lift $ message $ printf "STORE (%s): %s ===> %s"
+            (printIP currentIP) (show value) (pretty addr)
     let locInfo = noLocInfo{ locExpr = value, locOrigin = currentIP }
     lift $ locInfoInsert (MemLoc addr) locInfo
     lift $ makeRelevant $ MemLoc addr

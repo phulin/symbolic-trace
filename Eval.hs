@@ -46,7 +46,8 @@ data SymbolicState = SymbolicState {
         symbolicVarNameMap :: M.Map (ExprT, AddrEntry) String,
         symbolicCurrentIP :: Maybe Word64,
         symbolicWarnings :: [(Maybe Word64, String)],
-        symbolicMessages :: [String]
+        symbolicMessages :: [String],
+        symbolicSkipRest :: Bool
     } deriving (Eq, Ord, Show)
 -- Symbolic is our fundamental monad: it holds state about control flow and
 -- holds our knowledge of machine state.
@@ -61,6 +62,8 @@ getCurrentFunction :: Symbolic Function
 getCurrentFunction = symbolicFunction <$> get
 getCurrentIP :: Symbolic (Maybe Word64)
 getCurrentIP = symbolicCurrentIP <$> get
+getSkipRest :: Symbolic Bool
+getSkipRest = symbolicSkipRest <$> get
 putInfo :: Info -> Symbolic ()
 putInfo info = modify (\s -> s{ symbolicInfo = info })
 putPreviousBlock :: Maybe BasicBlock -> Symbolic ()
@@ -69,6 +72,11 @@ putCurrentFunction :: Function -> Symbolic ()
 putCurrentFunction f = modify (\s -> s{ symbolicFunction = f })
 putCurrentIP :: Maybe Word64 -> Symbolic ()
 putCurrentIP newIP = modify (\s -> s{ symbolicCurrentIP = newIP })
+
+skipRest :: Symbolic ()
+skipRest = modify (\s -> s{ symbolicSkipRest = True })
+clearSkipRest :: Symbolic ()
+clearSkipRest = modify (\s -> s{ symbolicSkipRest = False })
 
 printIP :: Maybe Word64 -> String
 printIP (Just realIP) = printf "%x" realIP
@@ -98,13 +106,22 @@ warning warn = do
 showWarning :: (Maybe Word64, String) -> String
 showWarning (ip, s) = printf " - (%s) %s" (printIP ip) s
 
+whenM :: Monad m => m Bool -> m () -> m ()
+whenM cond action = cond >>= (flip when) action
+
+inUserCode :: Symbolic Bool
+inUserCode = do
+    maybeCurrentIP <- getCurrentIP
+    return $ case maybeCurrentIP of
+        Just currentIP
+            | currentIP >= 2 ^ 32 -> False
+        _ -> True
+
 message :: String -> Symbolic ()
 message msg = do
     messages <- symbolicMessages <$> get
-    -- Just currentIP <- getCurrentIP
-    if True -- currentIP <= 2 ^ 32
-        then modify (\s -> s{ symbolicMessages = messages ++ [msg] })
-        else return ()
+    whenM inUserCode $
+        modify (\s -> s{ symbolicMessages = messages ++ [msg] })
 
 locInfoInsert :: Loc -> LocInfo -> Symbolic ()
 locInfoInsert key locInfo = do
@@ -131,7 +148,8 @@ noSymbolicState = SymbolicState{ symbolicInfo = M.empty,
                                  symbolicVarNameMap = M.empty,
                                  symbolicCurrentIP = Nothing,
                                  symbolicWarnings = [],
-                                 symbolicMessages = [] }
+                                 symbolicMessages = [],
+                                 symbolicSkipRest = False }
 
 valueAt :: Loc -> Symbolic Expr
 valueAt loc = exprFindInfo (InputExpr Int64T loc) loc
@@ -443,8 +461,8 @@ controlFlowUpdate (RetInst{ retInstValue = Just val }, _)
 controlFlowUpdate (RetInst{}, _) = return ()
 controlFlowUpdate (UnconditionalBranchInst{}, _) = return ()
 controlFlowUpdate (BranchInst{ branchTrueTarget = trueTarget,
-                                    branchFalseTarget = falseTarget,
-                                    branchCondition = cond },
+                               branchFalseTarget = falseTarget,
+                               branchCondition = cond },
                    Just (BranchOp idx)) = do
     (do
         condExpr <- buildExprToMaybeExpr $ valueToExpr cond
@@ -462,6 +480,9 @@ controlFlowUpdate (CallInst{}, Just (HelperFuncOp memlog)) = lift $ do
     currentFunc <- getCurrentFunction -- call stack abstraction
     runBlocks memlog
     putCurrentFunction currentFunc
+controlFlowUpdate (CallInst{ callFunction = ExternalFunctionC func }, _)
+    | identifierAsString (externalFunctionName func) == "cpu_loop_exit"
+        = lift skipRest
 controlFlowUpdate _ = fail ""
 
 infoUpdaters :: [(Instruction, Maybe MemlogOp) -> MaybeSymb ()]
@@ -472,12 +493,15 @@ infoUpdaters = [ ignoreUpdate,
                  failedUpdate ]
 
 updateInfo :: (Instruction, Maybe MemlogOp) -> Symbolic ()
-updateInfo instOp@(inst, _) = void $ runMaybeT $ foldl1 (<||>) infoUpdaters instOp
+updateInfo instOp@(inst, _) = do
+    skip <- getSkipRest
+    unless skip $ void $ runMaybeT $ foldl1 (<||>) infoUpdaters instOp
 
 runBlock :: (BasicBlock, InstOpList) -> Symbolic ()
 runBlock (block, instOpList) = do
     putCurrentFunction $ basicBlockFunction block 
     mapM updateInfo instOpList
+    clearSkipRest
     putPreviousBlock $ Just block
 
 isMemLoc :: Loc -> Bool

@@ -483,6 +483,7 @@ controlFlowUpdate (CallInst{}, Just (HelperFuncOp memlog)) = lift $ do
 controlFlowUpdate (CallInst{ callFunction = ExternalFunctionC func }, _)
     | identifierAsString (externalFunctionName func) == "cpu_loop_exit"
         = lift skipRest
+controlFlowUpdate (UnreachableInst{}, _) = lift $ warning "UNREACHABLE INSTRUCTION!"
 controlFlowUpdate _ = fail ""
 
 infoUpdaters :: [(Instruction, Maybe MemlogOp) -> MaybeSymb ()]

@@ -24,7 +24,6 @@ import Pretty
 
 data LocInfo = LocInfo{
     locExpr :: Expr,
-    locRelevant :: Bool,
     -- Guest instruction address where loc originated
     locOrigin :: Maybe Word64
 } deriving (Eq, Ord, Show)
@@ -32,7 +31,6 @@ data LocInfo = LocInfo{
 noLocInfo :: LocInfo
 noLocInfo = LocInfo{
     locExpr = IrrelevantExpr,
-    locRelevant = False,
     locOrigin = Nothing
 }
 
@@ -131,19 +129,9 @@ locInfoInsert :: Loc -> LocInfo -> Symbolic ()
 locInfoInsert key locInfo = do
     info <- getInfo
     putInfo $ M.insert key locInfo info
-makeRelevant :: Loc -> Symbolic ()
-makeRelevant loc = do
-    info <- getInfo
-    putInfo $ M.adjust (\li -> li{ locRelevant = True }) loc info
 exprFindInfo :: Expr -> Loc -> Symbolic Expr
 exprFindInfo def key = locExpr <$> M.findWithDefault defLocInfo key <$> getInfo
     where defLocInfo = noLocInfo{ locExpr = def }
-isRelevant :: Loc -> Symbolic Bool
-isRelevant loc = do
-    info <- getInfo
-    case M.lookup loc info of
-        Nothing -> return False
-        Just locInfo -> return $ locRelevant locInfo
 
 noSymbolicState :: SymbolicState
 noSymbolicState = SymbolicState{ symbolicInfo = M.empty,
@@ -407,14 +395,6 @@ memInstToExprs = [ loadInstToExpr, selectInstToExpr ]
 -- if the monad comes back Nothing.
 type MaybeSymb = MaybeT (Symbolic)
 
-makeValueRelevant :: Value -> Symbolic ()
-makeValueRelevant (InstructionC inst) = do
-    func <- getCurrentFunction
-    case instructionName inst of
-        Just id -> makeRelevant $ IdLoc func id
-        _ -> return ()
-makeValueRelevant _ = return ()
-
 storeUpdate :: (Instruction, Maybe MemlogOp) -> MaybeSymb ()
 storeUpdate (inst@StoreInst{ storeIsVolatile = False,
                                   storeValue = val },
@@ -426,8 +406,6 @@ storeUpdate (inst@StoreInst{ storeIsVolatile = False,
             (printIP currentIP) (show value) (pretty addr)
     let locInfo = noLocInfo{ locExpr = value, locOrigin = currentIP }
     lift $ locInfoInsert (MemLoc addr) locInfo
-    lift $ makeRelevant $ MemLoc addr
-    lift $ makeValueRelevant val
 -- This will trigger twice with each IP update, but that's okay because the
 -- second one is the one we want.
 storeUpdate (StoreInst{ storeIsVolatile = True,
@@ -468,7 +446,6 @@ failedUpdate instOp = lift (warnInstOp instOp) >> fail ""
 
 controlFlowUpdate :: (Instruction, Maybe MemlogOp) -> MaybeSymb ()
 controlFlowUpdate (RetInst{ retInstValue = Just val }, _) = do
-    lift $ makeValueRelevant val
     expr <- buildExprToMaybeExpr (valueToExpr val)
     lift $ putRetVal $ Just expr
 controlFlowUpdate (RetInst{}, _) = return ()
@@ -476,8 +453,7 @@ controlFlowUpdate (UnconditionalBranchInst{}, _) = return ()
 controlFlowUpdate (BranchInst{ branchTrueTarget = trueTarget,
                                branchFalseTarget = falseTarget,
                                branchCondition = cond },
-                   Just (BranchOp idx)) = do
-    optional $ do
+                   Just (BranchOp idx)) = void $ optional $ do
         condExpr <- buildExprToMaybeExpr $ valueToExpr cond
         maybeCurrentIP <- lift getCurrentIP
         currentIP <- case maybeCurrentIP of
@@ -487,7 +463,6 @@ controlFlowUpdate (BranchInst{ branchTrueTarget = trueTarget,
                 | otherwise -> return currentIP'
         let resultString = if idx == 0 then "TRUE" else "FALSE"
         lift $ message $ printf "BRANCH (%x): %s; %s\n" currentIP (show condExpr) resultString
-    lift $ makeValueRelevant $ cond
 controlFlowUpdate (SwitchInst{}, _) = return ()
 controlFlowUpdate (inst@CallInst{}, Just (HelperFuncOp memlog)) = do
     currentFunc <- lift getCurrentFunction -- call stack abstraction
@@ -548,7 +523,6 @@ showInfo :: Info -> String
 showInfo = unlines . map showEach . filter doShow . M.toList
     where showEach (key, val) = printf "%s %s-> %s" (pretty key) origin (show (locExpr val))
               where origin = fromMaybe "" $ printf "(from %x) " <$> locOrigin val
-          doShow (_, LocInfo{ locRelevant = False }) = False
           doShow (IdLoc{}, LocInfo{ locExpr = expr }) = doShowExpr expr
           doShow (MemLoc{}, LocInfo{ locExpr = IrrelevantExpr }) = False
           doShow _ = True
@@ -586,4 +560,3 @@ main = do
         putStrLn "Messages:"
         putStrLn $ L.intercalate "\n" messages
         putStrLn ""
-    putStrLn $ showInfo $ symbolicInfo state

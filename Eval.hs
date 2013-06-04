@@ -297,6 +297,15 @@ castInstToExpr inst = do
     value <- valueToExpr $ castedValue inst
     return $ exprConstructor (exprTOfInst inst) value
 
+-- Decide whether or not to tell the user about a load or a store.
+interestingOp :: Expr -> AddrEntry -> Bool
+interestingOp _ AddrEntry{ addrFlag = IrrelevantFlag } = False
+interestingOp _ AddrEntry{ addrType = GReg, addrVal = reg }
+    | reg >= 16 = False
+interestingOp e _
+    | usesEsp e = False
+interestingOp _ _ = True
+
 loadInstToExpr :: (Instruction, Maybe MemlogOp) -> BuildExpr Expr
 loadInstToExpr (inst@LoadInst{ loadAddress = addrValue },
                 Just (AddrMemlogOp LoadOp addrEntry)) = do
@@ -310,7 +319,9 @@ loadInstToExpr (inst@LoadInst{ loadAddress = addrValue },
             stringIP <- lift getStringIP
             addrString <- (show <$> lookupValue addrValue) <|>
                           return "unknown"
-            lift $ message $ printf "LOAD  (%s): %s <=== %s; %s" stringIP (show expr) (pretty addrEntry) addrString
+            when (interestingOp expr addrEntry) $
+                lift $ message $ printf "LOAD  (%s): %s <=== %s; %s"
+                    stringIP (show expr) (pretty addrEntry) addrString
             return expr
 loadInstToExpr _ = fail ""
 
@@ -409,7 +420,7 @@ storeUpdate (inst@StoreInst{ storeIsVolatile = False,
              (Just (AddrMemlogOp StoreOp addr))) = do
     value <- buildExprToMaybeExpr $ valueToExpr val
     currentIP <- lift getCurrentIP
-    unless (usesEsp value && not (addrFlag addr == IrrelevantFlag)) $
+    when (interestingOp value addr) $
         lift $ message $ printf "STORE (%s): %s ===> %s"
             (printIP currentIP) (show value) (pretty addr)
     let locInfo = noLocInfo{ locExpr = value, locOrigin = currentIP }

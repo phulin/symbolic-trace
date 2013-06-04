@@ -236,7 +236,8 @@ instructionToExpr inst = do
 valueToExpr :: Value -> BuildExpr Expr
 valueToExpr (ConstantC (ConstantFP _ _ value)) = return $ FLitExpr value 
 valueToExpr (ConstantC (ConstantInt _ _ value)) = return $ ILitExpr value
-valueToExpr (ConstantC (ConstantValue{ constantInstruction = inst })) = instructionToExpr inst
+valueToExpr (ConstantC (ConstantValue{ constantInstruction = inst }))
+    = foldl1 (<||>) instToExprs inst
 valueToExpr (InstructionC inst) = instructionToExpr inst
 valueToExpr (ArgumentC (Argument{ argumentName = name,
                                   argumentType = argType })) = do
@@ -317,10 +318,10 @@ loadInstToExpr (inst@LoadInst{ loadAddress = addrValue },
             expr <- (locExpr <$> maybeToM (M.lookup (MemLoc addrEntry) info)) <|>
                     (LoadExpr typ addrEntry <$> (lift $ generateName typ addrEntry))
             stringIP <- lift getStringIP
-            addrString <- (show <$> lookupValue addrValue) <|>
+            addrString <- (show <$> valueToExpr addrValue) <|>
                           return "unknown"
             when (interestingOp expr addrEntry) $
-                lift $ message $ printf "LOAD  (%s): %s <=== %s; %s"
+                lift $ message $ printf "LOAD  (%s): %s <=== %s; from %s"
                     stringIP (show expr) (pretty addrEntry) addrString
             return expr
 loadInstToExpr _ = fail ""

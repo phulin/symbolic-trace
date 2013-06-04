@@ -295,8 +295,60 @@ interestingOp e _
     | usesEsp e = False
 interestingOp _ _ = True
 
-loadInstToExpr :: (Instruction, Maybe MemlogOp) -> BuildExpr Expr
-loadInstToExpr (inst@LoadInst{ loadAddress = addrValue },
+findIncomingValue :: BasicBlock -> [(Value, Value)] -> Value
+findIncomingValue prevBlock valList
+    = pairListFind test (error err) $ map swap valList
+    where err = printf "Couldn't find block in list:\n%s" (show valList)
+          swap (a, b) = (b, a)
+          test (BasicBlockC block) = block == prevBlock
+          test _ = False
+
+typeBytes :: Type -> Integer
+typeBytes (TypePointer _ _) = 8
+typeBytes (TypeInteger bits) = fromIntegral bits `quot` 8
+typeBytes (TypeArray count t) = fromIntegral count * typeBytes t
+typeBytes (TypeStruct _ ts _) = sum $ map typeBytes ts
+typeBytes t = error $ printf "Unsupported type %s" (show t)
+
+otherInstToExpr :: Instruction -> BuildExpr Expr
+otherInstToExpr PhiNode{ phiIncomingValues = valList } = do
+    maybePrevBlock <- lift getPreviousBlock
+    let prevBlock = fromMaybe (error "No previous block!") maybePrevBlock
+    valueToExpr $ findIncomingValue prevBlock valList
+otherInstToExpr GetElementPtrInst{} = return GEPExpr
+otherInstToExpr inst@CallInst{ callFunction = ExternalFunctionC func,
+                               callArguments = argValuePairs }
+    | externalIsIntrinsic func = do
+        args <- mapM valueToExpr $ map fst argValuePairs
+        return $ IntrinsicExpr (exprTOfInst inst) func args
+otherInstToExpr inst@ExtractValueInst{ extractValueAggregate = aggr,
+                                         extractValueIndices = [idx] } = do
+    aggrExpr <- valueToExpr aggr
+    return $ ExtractExpr (exprTOfInst inst) idx aggrExpr
+otherInstToExpr inst@ICmpInst{ cmpPredicate = pred,
+                              cmpV1 = val1,
+                              cmpV2 = val2 } = do
+    expr1 <- valueToExpr val1
+    expr2 <- valueToExpr val2
+    return $ ICmpExpr pred (simplify expr1) (simplify expr2)
+otherInstToExpr _ = fail ""
+
+t :: (Show a) => a -> a
+t x = traceShow x x
+
+(<||>) :: Alternative f => (a -> f b) -> (a -> f b) -> a -> f b
+(<||>) f1 f2 a = f1 a <|> f2 a
+
+-- List of ways to process instructions and order in which to try them.
+-- Each one converts an instruction into the expression which is the
+-- instruction's output.
+instToExprs :: [Instruction -> BuildExpr Expr]
+instToExprs = [ binaryInstToExpr,
+                castInstToExpr,
+                otherInstToExpr ]
+
+memInstToExpr :: (Instruction, Maybe MemlogOp) -> BuildExpr Expr
+memInstToExpr (inst@LoadInst{ loadAddress = addrValue },
                 Just (AddrMemlogOp LoadOp addrEntry)) = do
     info <- lift getInfo
     let typ = exprTOfInst inst
@@ -312,84 +364,11 @@ loadInstToExpr (inst@LoadInst{ loadAddress = addrValue },
                 lift $ message $ printf "LOAD  (%s): %s <=== %s; from %s"
                     stringIP (show expr) (pretty addrEntry) addrString
             return expr
-loadInstToExpr _ = fail ""
-
-selectInstToExpr :: (Instruction, Maybe MemlogOp) -> BuildExpr Expr
-selectInstToExpr (inst@SelectInst{ selectTrueValue = trueVal,
+memInstToExpr (inst@SelectInst{ selectTrueValue = trueVal,
                                    selectFalseValue = falseVal },
                   Just (SelectOp selection))
     = valueToExpr $ if selection == 0 then trueVal else falseVal
-selectInstToExpr _ = fail ""
-
-findIncomingValue :: BasicBlock -> [(Value, Value)] -> Value
-findIncomingValue prevBlock valList
-    = pairListFind test (error err) $ map swap valList
-    where err = printf "Couldn't find block in list:\n%s" (show valList)
-          swap (a, b) = (b, a)
-          test (BasicBlockC block) = block == prevBlock
-          test _ = False
-
-phiInstToExpr :: Instruction -> BuildExpr Expr
-phiInstToExpr PhiNode{ phiIncomingValues = valList } = do
-    maybePrevBlock <- lift getPreviousBlock
-    let prevBlock = fromMaybe (error "No previous block!") maybePrevBlock
-    valueToExpr $ findIncomingValue prevBlock valList
-phiInstToExpr _ = fail ""
-
-typeBytes :: Type -> Integer
-typeBytes (TypePointer _ _) = 8
-typeBytes (TypeInteger bits) = fromIntegral bits `quot` 8
-typeBytes (TypeArray count t) = fromIntegral count * typeBytes t
-typeBytes (TypeStruct _ ts _) = sum $ map typeBytes ts
-typeBytes t = error $ printf "Unsupported type %s" (show t)
-
-gepInstToExpr :: Instruction -> BuildExpr Expr
-gepInstToExpr GetElementPtrInst{} = return GEPExpr
-gepInstToExpr _ = fail ""
-
-intrinsicToExpr :: Instruction -> BuildExpr Expr
-intrinsicToExpr inst@CallInst{ callFunction = ExternalFunctionC func,
-                               callArguments = argValuePairs }
-    | externalIsIntrinsic func = do
-        args <- mapM valueToExpr $ map fst argValuePairs
-        return $ IntrinsicExpr (exprTOfInst inst) func args
-intrinsicToExpr _ = fail ""
-
-extractInstToExpr inst@ExtractValueInst{ extractValueAggregate = aggr,
-                                         extractValueIndices = [idx] } = do
-    aggrExpr <- valueToExpr aggr
-    return $ ExtractExpr (exprTOfInst inst) idx aggrExpr
-extractInstToExpr _ = fail ""
-
-icmpInstToExpr :: Instruction -> BuildExpr Expr
-icmpInstToExpr inst@ICmpInst{ cmpPredicate = pred,
-                              cmpV1 = val1,
-                              cmpV2 = val2 } = do
-    expr1 <- valueToExpr val1
-    expr2 <- valueToExpr val2
-    return $ ICmpExpr pred (simplify expr1) (simplify expr2)
-icmpInstToExpr _ = fail ""
-
-t :: (Show a) => a -> a
-t x = traceShow x x
-
-(<||>) :: Alternative f => (a -> f b) -> (a -> f b) -> a -> f b
-(<||>) f1 f2 a = f1 a <|> f2 a
-
--- List of ways to process instructions and order in which to try them.
--- Each one converts an instruction into the expression which is the
--- instruction's output.
-instToExprs :: [Instruction -> BuildExpr Expr]
-instToExprs = [ binaryInstToExpr,
-                castInstToExpr,
-                phiInstToExpr,
-                gepInstToExpr,
-                intrinsicToExpr,
-                extractInstToExpr,
-                icmpInstToExpr ]
-
-memInstToExprs :: [(Instruction, Maybe MemlogOp) -> BuildExpr Expr]
-memInstToExprs = [ loadInstToExpr, selectInstToExpr ]
+memInstToExpr _ = fail ""
 
 -- For info updates that might fail, with the intention of no change
 -- if the monad comes back Nothing.
@@ -420,8 +399,7 @@ exprUpdate :: (Instruction, Maybe MemlogOp) -> MaybeSymb ()
 exprUpdate instOp@(inst, _) = do
     id <- maybeToM $ instructionName inst
     func <- lift getCurrentFunction
-    let builtExpr = (foldl1 (<||>) instToExprs) inst <|>
-                    (foldl1 (<||>) memInstToExprs) instOp
+    let builtExpr = foldl1 (<||>) instToExprs inst <|> memInstToExpr instOp
     expr <- buildExprToMaybeExpr builtExpr
     currentIP <- lift getCurrentIP
     let simplified = repeatf 8 simplify expr

@@ -408,13 +408,9 @@ exprUpdate instOp@(inst, _) = do
     let builtExpr = foldl1 (<||>) instToExprs inst <|> memInstToExpr instOp
     expr <- buildExprToMaybeExpr builtExpr
     currentIP <- getCurrentIP
-    let simplified = repeatf 8 simplify expr
+    let simplified = simplify expr
     let locInfo = noLocInfo{ locExpr = simplified, locOrigin = currentIP }
     locInfoInsert (IdLoc func id) locInfo
-    where repeatf 0 f x = trace "repeatf overflow, bailing" x
-          repeatf n f x
-              | x == f x = x
-              | otherwise = repeatf (n - 1) f $ f x 
 
 ignoreUpdate :: (Instruction, Maybe MemlogOp) -> MaybeSymb ()
 ignoreUpdate (AllocaInst{}, _) = return ()

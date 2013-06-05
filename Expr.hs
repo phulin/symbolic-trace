@@ -74,8 +74,6 @@ data Expr =
     BitcastExpr ExprT Expr |
     -- Type, dynamic address, and name.
     LoadExpr ExprT AddrEntry (Maybe String) |
-    BinaryHelperExpr ExprT Identifier Expr Expr |
-    CastHelperExpr ExprT Identifier Expr |
     ICmpExpr CmpPredicate Expr Expr |
     ILitExpr Integer | -- takes any integer type
     FLitExpr Double | -- takes any float type
@@ -113,8 +111,6 @@ instance Show Expr where
     show (LoadExpr _ _ (Just name)) = printf "%%%s" name
     show (LoadExpr _ addr@AddrEntry{ addrType = GReg } _) = printf "%s" (pretty addr)
     show (LoadExpr _ addr _) = printf "*%s" (pretty addr)
-    show (BinaryHelperExpr _ id e1 e2) = printf "%s(%s, %s)" (show id) (show e1) (show e2)
-    show (CastHelperExpr _ id e) = printf "%s(%s)" (show id) (show e)
     show (ICmpExpr pred e1 e2) = printf "%s %s %s" (show e1) (pretty pred) (show e2)
     show (ILitExpr i) = if i >= 256 then printf "0x%x" i else show i
     show (FLitExpr f) = show f
@@ -169,8 +165,6 @@ foldExpr fs (PtrToIntExpr t e) = foldExpr fs e
 foldExpr fs (IntToPtrExpr t e) = foldExpr fs e
 foldExpr fs (BitcastExpr t e) = foldExpr fs e
 foldExpr fs (LoadExpr t addr name) = loadFolder fs t addr name
-foldExpr fs (BinaryHelperExpr t id e1 e2) = binaryCombiner fs (foldExpr fs e1) (foldExpr fs e2)
-foldExpr fs (CastHelperExpr t id e) = foldExpr fs e
 foldExpr fs (ICmpExpr pred e1 e2) = binaryCombiner fs (foldExpr fs e1) (foldExpr fs e2)
 foldExpr fs (ILitExpr i) = iLitFolder fs i
 foldExpr fs (FLitExpr f) = fLitFolder fs f
@@ -191,22 +185,22 @@ simplify (AddExpr t e1 (ILitExpr 0)) = simplify e1
 simplify (AddExpr t (ILitExpr 0) e2) = simplify e2
 simplify (AddExpr t (ILitExpr a) (ILitExpr b)) = ILitExpr $ a + b
 simplify (AddExpr ta (MulExpr tm e1 e2) e3)
-    | e1 == e3 = MulExpr ta (simplify e1) (AddExpr tm (simplify e2) (ILitExpr 1))
+    | e1 == e3 = simplify $ MulExpr ta e1 (AddExpr tm e2 (ILitExpr 1))
 simplify (AddExpr t (AddExpr _ e1 (ILitExpr a)) (ILitExpr b))
-    = AddExpr t (simplify e1) (ILitExpr $ a + b)
+    = simplify $ AddExpr t e1 (ILitExpr $ a + b)
 simplify (AddExpr _ (SubExpr _ e1 e2) e3)
     | e2 == e3 = simplify e1
 simplify (AddExpr t e1 e2)
-    | e1 == e2 = MulExpr t (simplify e1) (ILitExpr 2)
+    | e1 == e2 = simplify $ MulExpr t e1 (ILitExpr 2)
 simplify (AddExpr t e1 e2) = AddExpr t (simplify e1) (simplify e2)
 simplify (SubExpr t (ILitExpr a) (ILitExpr b)) = ILitExpr $ a - b
-simplify (SubExpr t e1 (ILitExpr b)) = AddExpr t (simplify e1) (ILitExpr $ -b)
+simplify (SubExpr t e1 (ILitExpr b)) = simplify $ AddExpr t e1 (ILitExpr $ -b)
 simplify (SubExpr t e1 e2)
     | e1 == e2 = ILitExpr 0
 simplify (SubExpr ta (MulExpr tm e1 e2) e3)
-    | e1 == e3 = MulExpr ta (simplify e1) (SubExpr tm (simplify e2) (ILitExpr 1))
+    | e1 == e3 = simplify $ MulExpr ta e1 (SubExpr tm e2 (ILitExpr 1))
 simplify (SubExpr t (AddExpr _ e1 e2) (AddExpr _ e3 e4))
-    | e1 == e3 = SubExpr t (simplify e2) (simplify e4)
+    | e1 == e3 = simplify $ SubExpr t e2 e4
 simplify (SubExpr t e1 e2) = SubExpr t (simplify e1) (simplify e2)
 simplify (MulExpr t (ILitExpr a) (ILitExpr b)) = ILitExpr $ a * b
 simplify (MulExpr t e (ILitExpr 1)) = simplify e
@@ -214,7 +208,7 @@ simplify (MulExpr t e1 e2) = MulExpr t (simplify e1) (simplify e2)
 simplify (DivExpr t e1 e2) = DivExpr t (simplify e1) (simplify e2)
 simplify (RemExpr t e1 e2) = RemExpr t (simplify e1) (simplify e2)
 simplify (ShlExpr t e1 (ILitExpr i))
-    | i >= 0 = MulExpr t (simplify e1) (ILitExpr $ 2 ^ i)
+    | i >= 0 = simplify $ MulExpr t e1 (ILitExpr $ 2 ^ i)
 simplify (ShlExpr t e1 e2) = ShlExpr t (simplify e1) (simplify e2)
 simplify (LshrExpr t e1 e2) = LshrExpr t (simplify e1) (simplify e2)
 simplify (AshrExpr _ (ILitExpr 0) _) = ILitExpr 0
@@ -223,7 +217,7 @@ simplify (AndExpr t (ILitExpr a) (ILitExpr b)) = ILitExpr $ a .&. b
 simplify (AndExpr _ (ZExtExpr _ e@(LoadExpr Int8T _ _)) (ILitExpr 255)) = simplify e
 simplify (AndExpr Int32T e (ILitExpr 0xFFFFFFFF)) = simplify e
 simplify (AndExpr Int64T e (ILitExpr 0xFFFFFFFF))
-    = ZExtExpr Int64T $ TruncExpr Int32T $ simplify e
+    = simplify $ ZExtExpr Int64T $ TruncExpr Int32T e
 simplify (AndExpr t e1 e2) = AndExpr t (simplify e1) (simplify e2)
 simplify (OrExpr t (ILitExpr a) (ILitExpr b)) = ILitExpr $ a .|. b
 simplify (OrExpr t e1 e2) = OrExpr t (simplify e1) (simplify e2)
@@ -232,13 +226,18 @@ simplify (XorExpr t e1 e2) = XorExpr t (simplify e1) (simplify e2)
 --simplify (ZExtExpr _ e) = simplify e
 --simplify (SExtExpr _ e) = simplify e
 --simplify (TruncExpr _ e) = simplify e
-simplify (TruncExpr _ (ZExtExpr _ e)) = simplify e
-simplify (TruncExpr _ (SExtExpr _ e)) = simplify e
+simplify (TruncExpr t1 (ZExtExpr t2 e))
+    | t1 == t2 = simplify e
+    | bits t1 < bits t2 = simplify $ TruncExpr t1 e
+simplify (TruncExpr t1 (SExtExpr t2 e))
+    | t1 == t2 = simplify e
+    | bits t1 < bits t2 = simplify $ TruncExpr t1 e
 simplify expr@(TruncExpr t e@(ILitExpr int))
     | int < 2 ^ bits t = e
     | otherwise = expr
-simplify (TruncExpr t e) = TruncExpr t (simplify e)
 simplify (ZExtExpr t e@ILitExpr{}) = e
+simplify (ZExtExpr t1 (TruncExpr t2 e))
+    | t1 == t2 = simplify $ TruncExpr t2 e
 simplify (ZExtExpr t e) = ZExtExpr t (simplify e)
 simplify (SExtExpr t e@ILitExpr{}) = e -- FIXME: add typing to lits
 simplify (SExtExpr t e) = SExtExpr t (simplify e)
@@ -253,17 +252,13 @@ simplify (IntToPtrExpr t1 (PtrToIntExpr Int64T e)) = simplify e
 simplify (PtrToIntExpr t e) = PtrToIntExpr t (simplify e)
 simplify (IntToPtrExpr t e) = IntToPtrExpr t (simplify e)
 simplify (BitcastExpr t e) = BitcastExpr t (simplify e)
-simplify (BinaryHelperExpr t id e1 e2)
-    | identifierAsString id == "helper_imulq_T0_T1" = MulExpr t (simplify e1) (simplify e2)
-simplify (BinaryHelperExpr t id e1 e2) = BinaryHelperExpr t id (simplify e1) (simplify e2)
-simplify (CastHelperExpr t id e) = CastHelperExpr t id (simplify e)
 simplify (ICmpExpr p (SubExpr _ e1 e2) (ILitExpr 0))
-    = ICmpExpr p (simplify e1) (simplify e2)
+    = simplify $ ICmpExpr p e1 e2
 simplify (ICmpExpr ICmpEq (XorExpr _ e1 e2) (ILitExpr 0))
-    = ICmpExpr ICmpEq (simplify e1) (simplify e2)
+    = simplify $ ICmpExpr ICmpEq e1 e2
 simplify (ICmpExpr p (AndExpr _ e1 e2) (ILitExpr 0))
     | e1 == e2 && (p == ICmpEq || p == ICmpNe)
-        = ICmpExpr ICmpEq (simplify e1) (ILitExpr 0)
+        = simplify $ ICmpExpr ICmpEq e1 (ILitExpr 0)
 simplify (ICmpExpr p e1 e2) = ICmpExpr p (simplify e1) (simplify e2)
 simplify (IntrinsicExpr t f es) = IntrinsicExpr t f $ map simplify es
 simplify (ExtractExpr t idx e) = ExtractExpr t idx (simplify e)

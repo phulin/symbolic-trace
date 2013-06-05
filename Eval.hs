@@ -240,9 +240,10 @@ valueToExpr (ArgumentC (Argument{ argumentName = name,
     func <- getCurrentFunction
     identifierToExpr name <|>
         (return $ InputExpr (typeToExprT argType) (IdLoc func name))
-valueToExpr (GlobalVariableC GlobalVariable{ globalVariableName = name }) = do
+valueToExpr (GlobalVariableC GlobalVariable{ globalVariableName = name,
+                                             globalVariableType = varType }) = do
     func <- getCurrentFunction
-    return $ InputExpr VoidT (IdLoc func name) -- FIXME: get real typing info here
+    return $ InputExpr (typeToExprT varType) (IdLoc func name)
 valueToExpr val = warning ("Couldn't find expr for " ++ show val) >> fail ""
 
 lookupValue :: Value -> BuildExpr Expr

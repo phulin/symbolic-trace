@@ -363,13 +363,18 @@ memInstToExpr (inst@LoadInst{ loadAddress = addrValue },
     info <- getInfo
     let typ = exprTOfInst inst
     case addrFlag addrEntry of
-        IrrelevantFlag -> irrelevant -- Ignore parts of CPU state that Panda doesn't track.
+        IrrelevantFlag -> return IrrelevantExpr -- Ignore parts of CPU state that Panda doesn't track.
         _ -> do
             expr <- (locExpr <$> maybeToM (M.lookup (MemLoc addrEntry) info)) <|>
                     (LoadExpr typ addrEntry <$> generateName typ addrEntry)
             stringIP <- getStringIP
-            addrString <- (show <$> valueToExpr addrValue) <|>
-                          return "unknown"
+            addrString <-
+                (do
+                    addrExpr <- valueToExpr addrValue
+                    return $ show $ case addrExpr of
+                        IntToPtrExpr _ e -> e
+                        e -> e) <|>
+                return "unknown"
             when (interestingOp expr addrEntry) $
                 message $ printf "LOAD  (%s): %s <=== %s; from %s"
                     stringIP (show expr) (pretty addrEntry) addrString

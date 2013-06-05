@@ -260,6 +260,10 @@ simplify (ICmpExpr p (AndExpr _ e1 e2) (ILitExpr 0))
     | e1 == e2 && (p == ICmpEq || p == ICmpNe)
         = simplify $ ICmpExpr ICmpEq e1 (ILitExpr 0)
 simplify (ICmpExpr p e1 e2) = ICmpExpr p (simplify e1) (simplify e2)
+simplify (ExtractExpr t 0 (IntrinsicExpr _ f [e1, e2]))
+    | "llvm.uadd.with.overflow" `L.isPrefixOf`
+        identifierAsString (externalFunctionName f)
+        = simplify $ AddExpr t e1 e2
 simplify (IntrinsicExpr t f es) = IntrinsicExpr t f $ map simplify es
 simplify (ExtractExpr t idx e) = ExtractExpr t idx (simplify e)
 simplify e = e

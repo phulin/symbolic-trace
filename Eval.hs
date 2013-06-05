@@ -1,3 +1,4 @@
+{-# LANGUAGE FlexibleInstances, FlexibleContexts, UndecidableInstances, GeneralizedNewtypeDeriving, MultiParamTypeClasses #-}
 -- Symbolic evaluator for basic blocks
 
 module Main where
@@ -9,11 +10,11 @@ import qualified Data.Map as M
 import qualified Data.Set as S
 import qualified Data.Bits as Bits
 import Data.Word
-import Control.Applicative
 import Data.Maybe
 import Debug.Trace
+import Control.Applicative
 import Control.Monad
-import Control.Monad.Trans.State.Lazy
+import Control.Monad.State.Lazy
 import Control.Monad.Trans.Class(lift, MonadTrans)
 import Control.Monad.Trans.Maybe
 import Text.Printf(printf)
@@ -50,44 +51,48 @@ data SymbolicState = SymbolicState {
     } deriving (Eq, Ord, Show)
 -- Symbolic is our fundamental monad: it holds state about control flow and
 -- holds our knowledge of machine state.
-type Symbolic = State SymbolicState
+newtype Symbolic a = Symbolic{ unSymbolic :: State SymbolicState a }
+    deriving (Functor, Applicative, Monad, MonadState SymbolicState)
+
+class (MonadState SymbolicState m, Functor m) => Symbolicish m where { }
+instance (MonadState SymbolicState m, Functor m) => Symbolicish m
 
 -- Atomic operations inside Symbolic.
-getInfo :: Symbolic Info
+getInfo :: Symbolicish m => m Info
 getInfo = symbolicInfo <$> get
-getPreviousBlock :: Symbolic (Maybe BasicBlock)
+getPreviousBlock :: Symbolicish m => m (Maybe BasicBlock)
 getPreviousBlock = symbolicPreviousBlock <$> get
-getCurrentFunction :: Symbolic Function
+getCurrentFunction :: Symbolicish m => m Function
 getCurrentFunction = symbolicFunction <$> get
-getCurrentIP :: Symbolic (Maybe Word64)
+getCurrentIP :: Symbolicish m => m (Maybe Word64)
 getCurrentIP = symbolicCurrentIP <$> get
-getSkipRest :: Symbolic Bool
+getSkipRest :: Symbolicish m => m Bool
 getSkipRest = symbolicSkipRest <$> get
-getRetVal :: Symbolic (Maybe Expr)
+getRetVal :: Symbolicish m => m (Maybe Expr)
 getRetVal = symbolicRetVal <$> get
-putInfo :: Info -> Symbolic ()
+putInfo :: Symbolicish m => Info -> m ()
 putInfo info = modify (\s -> s{ symbolicInfo = info })
-putPreviousBlock :: Maybe BasicBlock -> Symbolic ()
+putPreviousBlock :: Symbolicish m => Maybe BasicBlock -> m ()
 putPreviousBlock block = modify (\s -> s{ symbolicPreviousBlock = block })
-putCurrentFunction :: Function -> Symbolic ()
+putCurrentFunction :: Symbolicish m => Function -> m ()
 putCurrentFunction f = modify (\s -> s{ symbolicFunction = f })
-putCurrentIP :: Maybe Word64 -> Symbolic ()
+putCurrentIP :: Symbolicish m => Maybe Word64 -> m ()
 putCurrentIP newIP = modify (\s -> s{ symbolicCurrentIP = newIP })
 putRetVal retVal = modify (\s -> s{ symbolicRetVal = retVal })
 
-skipRest :: Symbolic ()
+skipRest :: Symbolicish m => m ()
 skipRest = modify (\s -> s{ symbolicSkipRest = True })
-clearSkipRest :: Symbolic ()
+clearSkipRest :: Symbolicish m => m ()
 clearSkipRest = modify (\s -> s{ symbolicSkipRest = False })
 
 printIP :: Maybe Word64 -> String
 printIP (Just realIP) = printf "%x" realIP
 printIP Nothing = "unkown"
 
-getStringIP :: Symbolic String
+getStringIP :: Symbolicish m => m String
 getStringIP = printIP <$> getCurrentIP
 
-generateName :: ExprT -> AddrEntry -> Symbolic (Maybe String)
+generateName :: Symbolicish m => ExprT -> AddrEntry -> m (Maybe String)
 generateName typ addr@AddrEntry{ addrType = MAddr, addrVal = val } = do
     varNameMap <- getVarNameMap
     case M.lookup (typ, addr) varNameMap of
@@ -100,18 +105,10 @@ generateName typ addr@AddrEntry{ addrType = MAddr, addrVal = val } = do
           putVarNameMap m = modify (\s -> s{ symbolicVarNameMap = m })
 generateName _ _ = return Nothing
 
-warning :: String -> Symbolic ()
-warning warn = do
-    warnings <- symbolicWarnings <$> get
-    ip <- getCurrentIP
-    modify (\s -> s{ symbolicWarnings = warnings ++ [(ip, warn)] })
-showWarning :: (Maybe Word64, String) -> String
-showWarning (ip, s) = printf " - (%s) %s" (printIP ip) s
-
 whenM :: Monad m => m Bool -> m () -> m ()
 whenM cond action = cond >>= (flip when) action
 
-inUserCode :: Symbolic Bool
+inUserCode :: Symbolicish m => m Bool
 inUserCode = do
     maybeCurrentIP <- getCurrentIP
     return $ case maybeCurrentIP of
@@ -119,17 +116,25 @@ inUserCode = do
             | currentIP >= 2 ^ 32 -> False
         _ -> True
 
-message :: String -> Symbolic ()
+message :: Symbolicish m => String -> m ()
 message msg = do
     messages <- symbolicMessages <$> get
     whenM inUserCode $
         modify (\s -> s{ symbolicMessages = messages ++ [msg] })
+warning :: Symbolicish m => String -> m ()
+warning warn = do
+    warnings <- symbolicWarnings <$> get
+    ip <- getCurrentIP
+    modify (\s -> s{ symbolicWarnings = warnings ++ [(ip, warn)] })
 
-locInfoInsert :: Loc -> LocInfo -> Symbolic ()
+showWarning :: (Maybe Word64, String) -> String
+showWarning (ip, s) = printf " - (%s) %s" (printIP ip) s
+
+locInfoInsert :: Symbolicish m => Loc -> LocInfo -> m ()
 locInfoInsert key locInfo = do
     info <- getInfo
     putInfo $ M.insert key locInfo info
-exprFindInfo :: Expr -> Loc -> Symbolic Expr
+exprFindInfo :: Symbolicish m => Expr -> Loc -> m Expr
 exprFindInfo def key = locExpr <$> M.findWithDefault defLocInfo key <$> getInfo
     where defLocInfo = noLocInfo{ locExpr = def }
 
@@ -144,7 +149,7 @@ noSymbolicState = SymbolicState{ symbolicInfo = M.empty,
                                  symbolicSkipRest = False,
                                  symbolicRetVal = Nothing }
 
-valueAt :: Loc -> Symbolic Expr
+valueAt :: Symbolicish m => Loc -> m Expr
 valueAt loc = exprFindInfo (InputExpr Int64T loc) loc
 
 -- BuildExpr is a monad for building expressions. It allows us to short-
@@ -170,16 +175,14 @@ instance (Monad m) => Monad (BuildExprT m) where
     return x = BuildExprT (return $ JustI x)
     fail e = BuildExprT (return $ ErrorI e)
 
+instance (Monad m) => Functor (BuildExprT m) where
+    fmap f x = x >>= return . f
+
 instance MonadTrans BuildExprT where
-    lift m = BuildExprT $ do
-        x <- m
-        return $ JustI x
+    lift m = BuildExprT $ m >>= return . JustI
 
 irrelevant :: (Monad m) => BuildExprT m a
 irrelevant = BuildExprT $ return Irrelevant
-
-instance (Monad m) => Functor (BuildExprT m) where
-    fmap f x = x >>= return . f
 
 instance (Monad m) => Applicative (BuildExprT m) where
     pure = return
@@ -196,6 +199,9 @@ instance (Monad m) => Alternative (BuildExprT m) where
             (ErrorI _, JustI z) -> return $ JustI z
             (ErrorI _, Irrelevant) -> return Irrelevant
             (ErrorI s, ErrorI _) -> return $ ErrorI s
+
+instance MonadState SymbolicState (BuildExprT Symbolic) where
+    state = lift . state
 
 -- Some conversion functions between different monads
 buildExprToMaybeExpr :: (Functor m, Monad m) => BuildExprT m Expr -> MaybeT m Expr
@@ -215,8 +221,8 @@ instructionToExpr inst = do
     name <- case instructionName inst of
         Just n -> return n
         Nothing -> fail "No name for inst"
-    func <- lift getCurrentFunction
-    value <- lift $ valueAt (IdLoc func name)
+    func <- getCurrentFunction
+    value <- valueAt (IdLoc func name)
     case value of
         IrrelevantExpr -> return IrrelevantExpr -- HACK!!! figure out why this is happening
         e -> return e
@@ -229,12 +235,12 @@ valueToExpr (ConstantC (ConstantValue{ constantInstruction = inst }))
 valueToExpr (InstructionC inst) = instructionToExpr inst
 valueToExpr (ArgumentC (Argument{ argumentName = name,
                                   argumentType = argType })) = do
-    func <- lift getCurrentFunction
+    func <- getCurrentFunction
     return $ InputExpr (typeToExprT argType) (IdLoc func name)
 valueToExpr (GlobalVariableC GlobalVariable{ globalVariableName = name }) = do
-    func <- lift getCurrentFunction
+    func <- getCurrentFunction
     return $ InputExpr VoidT (IdLoc func name) -- FIXME: get real typing info here
-valueToExpr val = lift (warning ("Couldn't find expr for " ++ show val)) >> fail ""
+valueToExpr val = warning ("Couldn't find expr for " ++ show val) >> fail ""
 
 lookupValue :: Value -> BuildExpr Expr
 lookupValue val = do
@@ -242,7 +248,7 @@ lookupValue val = do
     loc <- case expr of
         InputExpr _ loc' -> return loc'
         _ -> fail ""
-    lift $ valueAt loc
+    valueAt loc
 
 binaryInstToExprConstructor :: Instruction -> BuildExpr (ExprT -> Expr -> Expr -> Expr)
 binaryInstToExprConstructor AddInst{} = return AddExpr
@@ -312,7 +318,7 @@ typeBytes t = error $ printf "Unsupported type %s" (show t)
 
 otherInstToExpr :: Instruction -> BuildExpr Expr
 otherInstToExpr PhiNode{ phiIncomingValues = valList } = do
-    maybePrevBlock <- lift getPreviousBlock
+    maybePrevBlock <- getPreviousBlock
     let prevBlock = fromMaybe (error "No previous block!") maybePrevBlock
     valueToExpr $ findIncomingValue prevBlock valList
 otherInstToExpr GetElementPtrInst{} = return GEPExpr
@@ -350,18 +356,18 @@ instToExprs = [ binaryInstToExpr,
 memInstToExpr :: (Instruction, Maybe MemlogOp) -> BuildExpr Expr
 memInstToExpr (inst@LoadInst{ loadAddress = addrValue },
                 Just (AddrMemlogOp LoadOp addrEntry)) = do
-    info <- lift getInfo
+    info <- getInfo
     let typ = exprTOfInst inst
     case addrFlag addrEntry of
         IrrelevantFlag -> irrelevant -- Ignore parts of CPU state that Panda doesn't track.
         _ -> do
             expr <- (locExpr <$> maybeToM (M.lookup (MemLoc addrEntry) info)) <|>
-                    (LoadExpr typ addrEntry <$> (lift $ generateName typ addrEntry))
-            stringIP <- lift getStringIP
+                    (LoadExpr typ addrEntry <$> generateName typ addrEntry)
+            stringIP <- getStringIP
             addrString <- (show <$> valueToExpr addrValue) <|>
                           return "unknown"
             when (interestingOp expr addrEntry) $
-                lift $ message $ printf "LOAD  (%s): %s <=== %s; from %s"
+                message $ printf "LOAD  (%s): %s <=== %s; from %s"
                     stringIP (show expr) (pretty addrEntry) addrString
             return expr
 memInstToExpr (inst@SelectInst{ selectTrueValue = trueVal,
@@ -379,32 +385,32 @@ storeUpdate (inst@StoreInst{ storeIsVolatile = False,
                                   storeValue = val },
              (Just (AddrMemlogOp StoreOp addr))) = do
     value <- buildExprToMaybeExpr $ valueToExpr val
-    currentIP <- lift getCurrentIP
+    currentIP <- getCurrentIP
     when (interestingOp value addr) $
-        lift $ message $ printf "STORE (%s): %s ===> %s"
+        message $ printf "STORE (%s): %s ===> %s"
             (printIP currentIP) (show value) (pretty addr)
     let locInfo = noLocInfo{ locExpr = value, locOrigin = currentIP }
-    lift $ locInfoInsert (MemLoc addr) locInfo
+    locInfoInsert (MemLoc addr) locInfo
 -- This will trigger twice with each IP update, but that's okay because the
 -- second one is the one we want.
 storeUpdate (StoreInst{ storeIsVolatile = True,
                         storeValue = val }, _) = do
     ip <- case valueContent val of
         ConstantC (ConstantInt{ constantIntValue = ipVal }) -> return ipVal
-        _ -> lift (warning "Failed to update IP") >> fail ""
-    lift $ putCurrentIP $ Just $ fromIntegral $ ip
+        _ -> warning "Failed to update IP" >> fail ""
+    putCurrentIP $ Just $ fromIntegral $ ip
 storeUpdate _ = fail ""
 
 exprUpdate :: (Instruction, Maybe MemlogOp) -> MaybeSymb ()
 exprUpdate instOp@(inst, _) = do
     id <- maybeToM $ instructionName inst
-    func <- lift getCurrentFunction
+    func <- getCurrentFunction
     let builtExpr = foldl1 (<||>) instToExprs inst <|> memInstToExpr instOp
     expr <- buildExprToMaybeExpr builtExpr
-    currentIP <- lift getCurrentIP
+    currentIP <- getCurrentIP
     let simplified = repeatf 8 simplify expr
     let locInfo = noLocInfo{ locExpr = simplified, locOrigin = currentIP }
-    lift $ locInfoInsert (IdLoc func id) locInfo
+    locInfoInsert (IdLoc func id) locInfo
     where repeatf 0 f x = trace "repeatf overflow, bailing" x
           repeatf n f x
               | x == f x = x
@@ -416,16 +422,18 @@ ignoreUpdate (CallInst{ callFunction = ExternalFunctionC func}, _)
     | (identifierAsString $ externalFunctionName func) == "log_dynval" = return ()
 ignoreUpdate _ = fail ""
 
-warnInstOp :: (Instruction, Maybe MemlogOp) -> Symbolic ()
-warnInstOp (inst, op) = warning $ printf "Couldn't process inst '%s' with op %s" (show inst) (show op)
+warnInstOp :: Symbolicish m => (Instruction, Maybe MemlogOp) -> m ()
+warnInstOp (inst, op)
+    = warning $ printf "Couldn't process inst '%s' with op %s"
+        (show inst) (show op)
 
 failedUpdate :: (Instruction, Maybe MemlogOp) -> MaybeSymb ()
-failedUpdate instOp = lift (warnInstOp instOp) >> fail ""
+failedUpdate instOp = warnInstOp instOp >> fail ""
 
 controlFlowUpdate :: (Instruction, Maybe MemlogOp) -> MaybeSymb ()
 controlFlowUpdate (RetInst{ retInstValue = Just val }, _) = do
     expr <- buildExprToMaybeExpr (valueToExpr val)
-    lift $ putRetVal $ Just expr
+    putRetVal $ Just expr
 controlFlowUpdate (RetInst{}, _) = return ()
 controlFlowUpdate (UnconditionalBranchInst{}, _) = return ()
 controlFlowUpdate (BranchInst{ branchTrueTarget = trueTarget,
@@ -433,29 +441,29 @@ controlFlowUpdate (BranchInst{ branchTrueTarget = trueTarget,
                                branchCondition = cond },
                    Just (BranchOp idx)) = void $ optional $ do
         condExpr <- buildExprToMaybeExpr $ valueToExpr cond
-        maybeCurrentIP <- lift getCurrentIP
+        maybeCurrentIP <- getCurrentIP
         currentIP <- case maybeCurrentIP of
             Nothing -> fail ""
             Just currentIP'
                 | currentIP' > 2 ^ 32 -> fail ""
                 | otherwise -> return currentIP'
         let resultString = if idx == 0 then "TRUE" else "FALSE"
-        lift $ message $ printf "BRANCH (%x): %s; %s\n" currentIP (show condExpr) resultString
+        message $ printf "BRANCH (%x): %s; %s\n" currentIP (show condExpr) resultString
 controlFlowUpdate (SwitchInst{}, _) = return ()
 controlFlowUpdate (inst@CallInst{}, Just (HelperFuncOp memlog)) = do
-    currentFunc <- lift getCurrentFunction -- call stack abstraction
+    currentFunc <- getCurrentFunction -- call stack abstraction
     maybeRetVal <- lift $ runBlocks memlog
     optional $ do
         val <- maybeToM $ maybeRetVal
         id <- maybeToM $ instructionName inst
-        currentIP <- lift getCurrentIP
+        currentIP <- getCurrentIP
         let locInfo = noLocInfo{ locExpr = val, locOrigin = currentIP }
-        lift $ locInfoInsert (IdLoc currentFunc id) locInfo
-    lift $ putCurrentFunction currentFunc
+        locInfoInsert (IdLoc currentFunc id) locInfo
+    putCurrentFunction currentFunc
 controlFlowUpdate (CallInst{ callFunction = ExternalFunctionC func }, _)
     | identifierAsString (externalFunctionName func) == "cpu_loop_exit"
-        = lift skipRest
-controlFlowUpdate (UnreachableInst{}, _) = lift $ warning "UNREACHABLE INSTRUCTION!"
+        = skipRest
+controlFlowUpdate (UnreachableInst{}, _) = warning "UNREACHABLE INSTRUCTION!"
 controlFlowUpdate _ = fail ""
 
 infoUpdaters :: [(Instruction, Maybe MemlogOp) -> MaybeSymb ()]
@@ -527,7 +535,7 @@ main = do
     memlog <- parseMemlog
     let associated = associateFuncs memlog interestingFuncs
     -- putStrLn $ showAssociated associated
-    let state = execState (runBlocks $! associated) noSymbolicState
+    let state = execState (unSymbolic $ runBlocks associated) noSymbolicState
     let warnings = symbolicWarnings $! state
     let messages = symbolicMessages $! state
     when (not $ null warnings) $ do

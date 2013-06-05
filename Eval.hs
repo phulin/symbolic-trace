@@ -126,6 +126,7 @@ warning warn = do
     warnings <- symbolicWarnings <$> get
     ip <- getCurrentIP
     modify (\s -> s{ symbolicWarnings = warnings ++ [(ip, warn)] })
+    message $ "WARNING: " ++ showWarning (ip, warn)
 
 showWarning :: (Maybe Word64, String) -> String
 showWarning (ip, s) = printf " - (%s) %s" (printIP ip) s

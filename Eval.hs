@@ -446,14 +446,10 @@ controlFlowUpdate (BranchInst{ branchTrueTarget = trueTarget,
                                branchCondition = cond },
                    Just (BranchOp idx)) = void $ optional $ do
         condExpr <- buildExprToMaybeExpr $ valueToExpr cond
-        maybeCurrentIP <- getCurrentIP
-        currentIP <- case maybeCurrentIP of
-            Nothing -> fail ""
-            Just currentIP'
-                | currentIP' > 2 ^ 32 -> fail ""
-                | otherwise -> return currentIP'
+        currentIP <- getCurrentIP
         let resultString = if idx == 0 then "TRUE" else "FALSE"
-        message $ printf "BRANCH (%x): %s; %s\n" currentIP (show condExpr) resultString
+        message $ printf "BRANCH (%s): %s; %s\n"
+            (printIP currentIP) (show condExpr) resultString
 controlFlowUpdate (SwitchInst{}, _) = return ()
 controlFlowUpdate (inst@CallInst{ callArguments = argVals,
                                   callFunction = FunctionC func },

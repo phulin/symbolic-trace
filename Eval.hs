@@ -216,11 +216,8 @@ maybeToM :: (Monad m) => Maybe a -> m a
 maybeToM (Just x) = return x
 maybeToM (Nothing) = fail ""
 
-instructionToExpr :: Instruction -> BuildExpr Expr
-instructionToExpr inst = do
-    name <- case instructionName inst of
-        Just n -> return n
-        Nothing -> fail "No name for inst"
+identifierToExpr :: Identifier -> BuildExpr Expr
+identifierToExpr name = do
     func <- getCurrentFunction
     value <- valueAt (IdLoc func name)
     case value of
@@ -232,11 +229,16 @@ valueToExpr (ConstantC (ConstantFP _ _ value)) = return $ FLitExpr value
 valueToExpr (ConstantC (ConstantInt _ _ value)) = return $ ILitExpr value
 valueToExpr (ConstantC (ConstantValue{ constantInstruction = inst }))
     = foldl1 (<||>) instToExprs inst
-valueToExpr (InstructionC inst) = instructionToExpr inst
+valueToExpr (InstructionC inst) = do
+    name <- case instructionName inst of
+        Just n -> return n
+        Nothing -> fail "No name for inst"
+    identifierToExpr name
 valueToExpr (ArgumentC (Argument{ argumentName = name,
                                   argumentType = argType })) = do
     func <- getCurrentFunction
-    return $ InputExpr (typeToExprT argType) (IdLoc func name)
+    identifierToExpr name <|>
+        (return $ InputExpr (typeToExprT argType) (IdLoc func name))
 valueToExpr (GlobalVariableC GlobalVariable{ globalVariableName = name }) = do
     func <- getCurrentFunction
     return $ InputExpr VoidT (IdLoc func name) -- FIXME: get real typing info here
@@ -446,15 +448,27 @@ controlFlowUpdate (BranchInst{ branchTrueTarget = trueTarget,
         let resultString = if idx == 0 then "TRUE" else "FALSE"
         message $ printf "BRANCH (%x): %s; %s\n" currentIP (show condExpr) resultString
 controlFlowUpdate (SwitchInst{}, _) = return ()
-controlFlowUpdate (inst@CallInst{}, Just (HelperFuncOp memlog)) = do
-    currentFunc <- getCurrentFunction -- call stack abstraction
+controlFlowUpdate (inst@CallInst{ callArguments = argVals,
+                                  callFunction = FunctionC func },
+                   Just (HelperFuncOp memlog)) = do
+    -- Call stack abstraction; store current function so we can restore it later
+    currentFunc <- getCurrentFunction
+    -- Pass arguments through
+    argExprs <- mapM (buildExprToMaybeExpr . valueToExpr . fst) argVals
+    let argNames = map argumentName $ functionParameters func
+    let locs = map (IdLoc func) argNames
+    let argLocInfos = [ noLocInfo{ locExpr = e } | e <- argExprs ]
+    zipWithM locInfoInsert locs argLocInfos 
+    -- Run and grab return value
     maybeRetVal <- lift $ runBlocks memlog
+    -- Understand return value
     optional $ do
         val <- maybeToM $ maybeRetVal
         id <- maybeToM $ instructionName inst
         currentIP <- getCurrentIP
         let locInfo = noLocInfo{ locExpr = val, locOrigin = currentIP }
         locInfoInsert (IdLoc currentFunc id) locInfo
+    -- Restore old function
     putCurrentFunction currentFunc
 controlFlowUpdate (CallInst{ callFunction = ExternalFunctionC func }, _)
     | identifierAsString (externalFunctionName func) == "cpu_loop_exit"

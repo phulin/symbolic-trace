@@ -2,8 +2,9 @@ module Expr(Loc(..), ExprT(..), Expr(..), simplify, exprTOfInst, typeToExprT, Ex
 
 import Debug.Trace
 
-import Data.Bits((.&.), (.|.), xor)
+import Data.Bits((.&.), (.|.), xor, shiftL, shiftR)
 import Data.LLVM.Types
+import Data.Word(Word8, Word32, Word64)
 import Text.Printf(printf)
 
 import Memlog(AddrEntry(..), AddrEntryType(..))
@@ -207,25 +208,40 @@ simplify (MulExpr t e (ILitExpr 1)) = simplify e
 simplify (MulExpr t e1 e2) = MulExpr t (simplify e1) (simplify e2)
 simplify (DivExpr t e1 e2) = DivExpr t (simplify e1) (simplify e2)
 simplify (RemExpr t e1 e2) = RemExpr t (simplify e1) (simplify e2)
-simplify (ShlExpr t e1 (ILitExpr i))
-    | i >= 0 = simplify $ MulExpr t e1 (ILitExpr $ 2 ^ i)
+--simplify (ShlExpr t e1 (ILitExpr i))
+--    | i >= 0 = simplify $ MulExpr t e1 (ILitExpr $ 2 ^ i)
+simplify (ShlExpr t (ILitExpr a) (ILitExpr b))
+    = ILitExpr $ (shiftL a $ fromIntegral b) `rem` (2 ^ bits t)
 simplify (ShlExpr t e1 e2) = ShlExpr t (simplify e1) (simplify e2)
+simplify (LshrExpr t (ILitExpr a) (ILitExpr b))
+    = ILitExpr $ shiftR (a `rem` (2 ^ bits t)) $ fromIntegral b
 simplify (LshrExpr t e1 e2) = LshrExpr t (simplify e1) (simplify e2)
 simplify (AshrExpr _ (ILitExpr 0) _) = ILitExpr 0
+simplify (AshrExpr t (ILitExpr a) (ILitExpr b))
+    = ILitExpr $ case t of
+        Int8T -> fromIntegral $ shiftR a8 $ fromIntegral b
+        Int32T -> fromIntegral $ shiftR a32 $ fromIntegral b
+        Int64T -> fromIntegral $ shiftR a64 $ fromIntegral b
+    where a64 = (fromIntegral a) :: Word64
+          a32 = (fromIntegral a) :: Word32
+          a8 = (fromIntegral a) :: Word8
 simplify (AshrExpr t e1 e2) = AshrExpr t (simplify e1) (simplify e2)
-simplify (AndExpr t (ILitExpr a) (ILitExpr b)) = ILitExpr $ a .&. b
+simplify (AndExpr t (ILitExpr a) (ILitExpr b)) = ILitExpr $ (a .&. b) `rem` (2 ^ bits t)
 simplify (AndExpr _ (ZExtExpr _ e@(LoadExpr Int8T _ _)) (ILitExpr 255)) = simplify e
 simplify (AndExpr Int32T e (ILitExpr 0xFFFFFFFF)) = simplify e
 simplify (AndExpr Int64T e (ILitExpr 0xFFFFFFFF))
     = simplify $ ZExtExpr Int64T $ TruncExpr Int32T e
 simplify (AndExpr t e1 e2) = AndExpr t (simplify e1) (simplify e2)
-simplify (OrExpr t (ILitExpr a) (ILitExpr b)) = ILitExpr $ a .|. b
+simplify (OrExpr t (ILitExpr a) (ILitExpr b)) = ILitExpr $ (a .|. b) `rem` (2 ^ bits t)
 simplify (OrExpr t e1 e2) = OrExpr t (simplify e1) (simplify e2)
+simplify (XorExpr t (ILitExpr a) (ILitExpr b)) = ILitExpr $ (a `xor` b) `rem` (2 ^ bits t)
 simplify (XorExpr t e1 e2) = XorExpr t (simplify e1) (simplify e2)
 -- FIXME: HACK!!!!
 --simplify (ZExtExpr _ e) = simplify e
 --simplify (SExtExpr _ e) = simplify e
 --simplify (TruncExpr _ e) = simplify e
+simplify (TruncExpr t1 (TruncExpr t2 e))
+    | bits t1 <= bits t2 = simplify $ TruncExpr t1 e
 simplify (TruncExpr t1 (ZExtExpr t2 e))
     | t1 == t2 = simplify e
     | bits t1 < bits t2 = simplify $ TruncExpr t1 e

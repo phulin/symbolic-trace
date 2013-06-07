@@ -98,7 +98,7 @@ generateName typ addr@AddrEntry{ addrType = MAddr, addrVal = val } = do
     case M.lookup (typ, addr) varNameMap of
         Just name -> return $ Just name
         Nothing -> do
-            let newName = printf "%s_%03x_%d" (pretty typ) (val `rem` (2 ^ 12)) (M.size varNameMap)
+            let newName = printf "%s_%04x_%d" (pretty typ) (val `rem` (2 ^ 12)) (M.size varNameMap)
             putVarNameMap $ M.insert (typ, addr) newName varNameMap 
             return $ Just newName
     where getVarNameMap = symbolicVarNameMap <$> get

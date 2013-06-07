@@ -23,7 +23,7 @@ instance Pretty Loc where
     pretty (IdLoc f id) = printf "%s: %s" (show $ functionName f) (show id)
     pretty (MemLoc addr) = pretty addr
 
-data ExprT = VoidT | PtrT | Int8T | Int32T | Int64T | FloatT | DoubleT
+data ExprT = VoidT | PtrT | Int1T | Int8T | Int32T | Int64T | FloatT | DoubleT
     | StructT [ExprT]
     deriving (Eq, Ord, Show)
 
@@ -176,10 +176,11 @@ foldExpr fs (GEPExpr) = irrelevantFolder fs
 foldExpr fs (IrrelevantExpr) = irrelevantFolder fs
 
 bits :: ExprT -> Int
+bits Int1T = 1
 bits Int8T = 8
 bits Int32T = 32
 bits Int64T = 64
-bits t = error $ "Unexpected argument to bits: " ++ show t
+bits t = trace ("Unexpected argument to bits: " ++ show t) 64
 
 simplify :: Expr -> Expr
 simplify (AddExpr t e1 (ILitExpr 0)) = simplify e1
@@ -286,6 +287,7 @@ simplify e = e
 
 -- Simple type system
 typeToExprT :: Type -> ExprT
+typeToExprT (TypeInteger 1) = Int1T
 typeToExprT (TypeInteger 8) = Int8T
 typeToExprT (TypeInteger 32) = Int32T
 typeToExprT (TypeInteger 64) = Int32T
@@ -293,7 +295,7 @@ typeToExprT (TypePointer _ _) = PtrT
 typeToExprT (TypeFloat) = FloatT
 typeToExprT (TypeDouble) = DoubleT
 typeToExprT (TypeStruct _ ts _) = StructT $ map typeToExprT ts
-typeToExprT _ = VoidT
+typeToExprT t = trace (printf "making VoidT from %s" (show t)) VoidT
 
 exprTOfInst :: Instruction -> ExprT
 exprTOfInst = typeToExprT . instructionType

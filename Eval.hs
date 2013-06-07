@@ -1,10 +1,9 @@
 {-# LANGUAGE FlexibleInstances, FlexibleContexts, UndecidableInstances, GeneralizedNewtypeDeriving, MultiParamTypeClasses #-}
 -- Symbolic evaluator for basic blocks
 
-module Main where
+module Eval(Symbolic(..), SymbolicState(..), noSymbolicState, runBlocks) where
 
 import Data.LLVM.Types
-import LLVM.Parse
 import qualified Data.List as L
 import qualified Data.Map as M
 import qualified Data.Set as S
@@ -540,32 +539,3 @@ showInfo = unlines . map showEach . filter doShow . M.toList
           doShowExpr LoadExpr{} = False
           doShowExpr InputExpr{} = True
           doShowExpr expr = not $ usesEsp expr
-
-interesting :: String -> [Function] -> Interesting
-interesting focus fs = (before, reverse revOurs, reverse revAfter)
-    where boring = not . L.isInfixOf focus . identifierAsString . functionName
-          (before, afterFirst) = span boring fs
-          revAfterFirst = reverse afterFirst
-          (revAfter, revOurs) = span boring revAfterFirst
-
-main :: IO ()
-main = do
-    theMod <- parseLLVMFile defaultParserOptions "/tmp/llvm-mod.bc"
-    funcNameList <- lines <$> readFile "/tmp/llvm-functions.log"
-    let findFunc name = fromMaybe (error $ "Couldn't find function " ++ name) $ findFunctionByName theMod name
-    let funcList = map findFunc funcNameList
-    let interestingFuncs = interesting "main" funcList
-    memlog <- parseMemlog
-    let associated = associateFuncs memlog interestingFuncs
-    -- putStrLn $ showAssociated associated
-    let state = execState (unSymbolic $ runBlocks associated) noSymbolicState
-    let warnings = symbolicWarnings $! state
-    let messages = symbolicMessages $! state
-    when (not $ null warnings) $ do
-        putStrLn "Warnings:"
-        putStrLn $ L.intercalate "\n" $ map showWarning warnings
-        putStrLn ""
-    when (not $ null messages) $ do
-        putStrLn "Messages:"
-        putStrLn $ L.intercalate "\n" messages
-        putStrLn ""

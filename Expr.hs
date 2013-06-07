@@ -237,6 +237,8 @@ simplify (AndExpr Int64T e (ILitExpr 0xFFFFFFFF))
     = simplify $ ZExtExpr Int64T $ TruncExpr Int32T e
 simplify (AndExpr t e1 e2) = AndExpr t (simplify e1) (simplify e2)
 simplify (OrExpr t (ILitExpr a) (ILitExpr b)) = ILitExpr $ (a .|. b) `rem` (2 ^ bits t)
+simplify (OrExpr t e (ILitExpr 0)) = simplify e
+simplify (OrExpr t (ILitExpr 0) e) = simplify e
 simplify (OrExpr t e1 e2) = OrExpr t (simplify e1) (simplify e2)
 simplify (XorExpr t (ILitExpr a) (ILitExpr b)) = ILitExpr $ (a `xor` b) `rem` (2 ^ bits t)
 simplify (XorExpr t e1 e2) = XorExpr t (simplify e1) (simplify e2)
@@ -279,11 +281,21 @@ simplify (ICmpExpr ICmpEq (XorExpr _ e1 e2) (ILitExpr 0))
 simplify (ICmpExpr p (AndExpr _ e1 e2) (ILitExpr 0))
     | e1 == e2 && (p == ICmpEq || p == ICmpNe)
         = simplify $ ICmpExpr ICmpEq e1 (ILitExpr 0)
+simplify (ICmpExpr ICmpEq (ILitExpr a) (ILitExpr b))
+    | a == b = ILitExpr 1
+    | otherwise = ILitExpr 0
 simplify (ICmpExpr p e1 e2) = ICmpExpr p (simplify e1) (simplify e2)
 simplify (ExtractExpr t 0 (IntrinsicExpr _ f [e1, e2]))
     | "llvm.uadd.with.overflow" `L.isPrefixOf`
         identifierAsString (externalFunctionName f)
         = simplify $ AddExpr t e1 e2
+simplify (ExtractExpr _ 1 (IntrinsicExpr (StructT [_, t])
+             f [ILitExpr a, ILitExpr b]))
+    | "llvm.uadd.with.overflow" `L.isPrefixOf`
+        identifierAsString (externalFunctionName f)
+        = case compare (a + b) (2 ^ bits t) of
+            LT -> ILitExpr 0
+            _ -> ILitExpr 1
 simplify (StubExpr t f es) = StubExpr t f $ map simplify es
 simplify (IntrinsicExpr t f es) = IntrinsicExpr t f $ map simplify es
 simplify (ExtractExpr t idx e) = ExtractExpr t idx (simplify e)

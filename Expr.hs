@@ -236,6 +236,36 @@ simplify (AndExpr Int32T e (ILitExpr 0xFFFFFFFF)) = simplify e
 simplify (AndExpr Int64T e (ILitExpr 0xFFFFFFFF))
     = simplify $ ZExtExpr Int64T $ TruncExpr Int32T e
 simplify (AndExpr t e1 e2) = AndExpr t (simplify e1) (simplify e2)
+simplify
+    (OrExpr t
+        (LshrExpr _ e1 r@(ILitExpr a))
+        (ShlExpr _ e2 l@(ILitExpr b)))
+    | e1 == e2 && a + b == fromIntegral (bits t)
+        = simplify $ case compare a b of
+            LT -> StubExpr t "RotR" [e1, r]
+            _ -> StubExpr t "RotL" [e2, l]
+simplify
+    (OrExpr t
+        (ShlExpr _ e2 l@(ILitExpr b))
+        (LshrExpr _ e1 r@(ILitExpr a)))
+    | e1 == e2 && a + b == fromIntegral (bits t)
+        = simplify $ case compare a b of
+            LT -> StubExpr t "RotR" [e1, r]
+            _ -> StubExpr t "RotL" [e2, l]
+simplify
+    (OrExpr t
+        (ShlExpr _ e1 (ILitExpr 24))
+        (OrExpr _
+            (OrExpr _
+                (LshrExpr _ e2 (ILitExpr 24))
+                (AndExpr _
+                    (LshrExpr _ e3 (ILitExpr 8))
+                    (ILitExpr 0xFF00)))
+            (AndExpr _
+                (ShlExpr _ e4 (ILitExpr 8))
+                (ILitExpr 0xFF0000))))
+    | e1 == e2 && e2 == e3 && e3 == e4
+        = simplify $ StubExpr t "Byteswap32" [e1]
 simplify (OrExpr t (ILitExpr a) (ILitExpr b)) = ILitExpr $ (a .|. b) `rem` (2 ^ bits t)
 simplify (OrExpr t e (ILitExpr 0)) = simplify e
 simplify (OrExpr t (ILitExpr 0) e) = simplify e

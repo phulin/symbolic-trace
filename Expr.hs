@@ -79,6 +79,7 @@ data Expr =
     ILitExpr Integer | -- takes any integer type
     FLitExpr Double | -- takes any float type
     InputExpr ExprT Loc |
+    StubExpr ExprT String [Expr] |
     IntrinsicExpr ExprT ExternalFunction [Expr] |
     ExtractExpr ExprT Int Expr |
     GEPExpr | -- dummy expression for getelementptr instructions
@@ -116,6 +117,7 @@ instance Show Expr where
     show (ILitExpr i) = if i >= 256 then printf "0x%x" i else show i
     show (FLitExpr f) = show f
     show (InputExpr _ loc) = printf "(%s)" (show loc)
+    show (StubExpr _ f es) = printf "%s(%s)" f (L.intercalate ", " $ map show es)
     show (IntrinsicExpr _ f es) = printf "%s(%s)" (show $ externalFunctionName f)
         (L.intercalate ", " $ map show es)
     show (ExtractExpr _ idx e) = printf "%s[%d]" (show e) idx
@@ -170,6 +172,7 @@ foldExpr fs (ICmpExpr pred e1 e2) = binaryCombiner fs (foldExpr fs e1) (foldExpr
 foldExpr fs (ILitExpr i) = iLitFolder fs i
 foldExpr fs (FLitExpr f) = fLitFolder fs f
 foldExpr fs (InputExpr t loc) = inputFolder fs t loc
+foldExpr fs (StubExpr _ _ args) = foldl1 (binaryCombiner fs) (map (foldExpr fs) args)
 foldExpr fs (IntrinsicExpr _ _ args) = foldl1 (binaryCombiner fs) (map (foldExpr fs) args)
 foldExpr fs (ExtractExpr _ _ e) = foldExpr fs e
 foldExpr fs (GEPExpr) = irrelevantFolder fs
@@ -281,6 +284,7 @@ simplify (ExtractExpr t 0 (IntrinsicExpr _ f [e1, e2]))
     | "llvm.uadd.with.overflow" `L.isPrefixOf`
         identifierAsString (externalFunctionName f)
         = simplify $ AddExpr t e1 e2
+simplify (StubExpr t f es) = StubExpr t f $ map simplify es
 simplify (IntrinsicExpr t f es) = IntrinsicExpr t f $ map simplify es
 simplify (ExtractExpr t idx e) = ExtractExpr t idx (simplify e)
 simplify e = e

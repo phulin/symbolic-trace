@@ -376,7 +376,7 @@ memInstToExpr (inst@LoadInst{ loadAddress = addrValue },
                         e -> e) <|>
                 return "unknown"
             when (interestingOp expr addrEntry) $
-                message $ printf "LOAD  (%s): %s <=== %s; from %s"
+                message $ printf "LOAD  (%s): %s <=== %s [%s]"
                     stringIP (show expr) (pretty addrEntry) addrString
             return expr
 memInstToExpr (inst@SelectInst{ selectTrueValue = trueVal,
@@ -391,13 +391,21 @@ type MaybeSymb = MaybeT (Symbolic)
 
 storeUpdate :: (Instruction, Maybe MemlogOp) -> MaybeSymb ()
 storeUpdate (inst@StoreInst{ storeIsVolatile = False,
-                                  storeValue = val },
+                             storeValue = val,
+                             storeAddress = addrValue },
              (Just (AddrMemlogOp StoreOp addr))) = do
     value <- buildExprToMaybeExpr $ valueToExpr val
     currentIP <- getCurrentIP
+    addrString <-
+        (do
+            addrExpr <- buildExprToMaybeExpr $ valueToExpr addrValue
+            return $ show $ case addrExpr of
+                IntToPtrExpr _ e -> e
+                e -> e) <|>
+        return "unknown"
     when (interestingOp value addr) $
-        message $ printf "STORE (%s): %s ===> %s"
-            (printIP currentIP) (show value) (pretty addr)
+        message $ printf "STORE (%s): %s ===> %s [%s]"
+            (printIP currentIP) (show value) (pretty addr) addrString
     let locInfo = noLocInfo{ locExpr = value, locOrigin = currentIP }
     locInfoInsert (MemLoc addr) locInfo
 -- This will trigger twice with each IP update, but that's okay because the
@@ -440,7 +448,9 @@ controlFlowUpdate (RetInst{ retInstValue = Just val }, _) = do
     expr <- buildExprToMaybeExpr (valueToExpr val)
     putRetVal $ Just expr
 controlFlowUpdate (RetInst{}, _) = return ()
-controlFlowUpdate (UnconditionalBranchInst{}, _) = return ()
+controlFlowUpdate (UnconditionalBranchInst{}, _) = do
+    currentIP <- getCurrentIP
+    message $ printf "BRANCH (%s)\n" (printIP currentIP)
 controlFlowUpdate (BranchInst{ branchTrueTarget = trueTarget,
                                branchFalseTarget = falseTarget,
                                branchCondition = cond },

@@ -541,9 +541,9 @@ showInfo = unlines . map showEach . filter doShow . M.toList
           doShowExpr InputExpr{} = True
           doShowExpr expr = not $ usesEsp expr
 
-interesting :: [Function] -> Interesting
-interesting fs = (before, reverse revOurs, reverse revAfter)
-    where boring = not . L.isInfixOf "main" . identifierAsString . functionName
+interesting :: String -> [Function] -> Interesting
+interesting focus fs = (before, reverse revOurs, reverse revAfter)
+    where boring = not . L.isInfixOf focus . identifierAsString . functionName
           (before, afterFirst) = span boring fs
           revAfterFirst = reverse afterFirst
           (revAfter, revOurs) = span boring revAfterFirst
@@ -554,7 +554,7 @@ main = do
     funcNameList <- lines <$> readFile "/tmp/llvm-functions.log"
     let findFunc name = fromMaybe (error $ "Couldn't find function " ++ name) $ findFunctionByName theMod name
     let funcList = map findFunc funcNameList
-    let interestingFuncs = interesting funcList
+    let interestingFuncs = interesting "main" funcList
     memlog <- parseMemlog
     let associated = associateFuncs memlog interestingFuncs
     -- putStrLn $ showAssociated associated

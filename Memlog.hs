@@ -18,6 +18,7 @@ import qualified Data.Map as M
 import qualified Data.Set as S
 
 import Data.RESET.Types
+import AppList
 import Instances
 import Pretty
 
@@ -86,6 +87,7 @@ getAddrFlag = do
 
 type InstOpList = [(Instruction, Maybe MemlogOp)]
 type MemlogList = [(BasicBlock, InstOpList)]
+type MemlogAppList = AppList (BasicBlock, InstOpList)
 
 -- Monads for doing the association.
 
@@ -95,7 +97,7 @@ type OpContext = State [MemlogOp]
 -- The Maybe keeps track of whether we are actually keeping track
 -- (i.e. this is during user code, not loading code)
 -- The list is kept reversed for efficiency reasons.
-type MemlogContext = StateT (Maybe MemlogList) OpContext
+type MemlogContext = StateT (Maybe MemlogAppList) OpContext
 -- Inside a basic block, watch out to see if we run into a control-flow instruction.
 type FuncOpContext = StateT (Maybe BasicBlock) OpContext
 memlogPop :: FuncOpContext (Maybe MemlogOp)
@@ -169,9 +171,9 @@ associateInst inst@UnconditionalBranchInst{ unconditionalBranchTarget = target }
     liftM Just $ memlogPopWithErrorInst inst
 associateInst CallInst{ callFunction = FunctionC func } = do
     lift $ do -- inside OpContext
-        maybeRevMemlog <- execStateT (associateMemlogWithFunc func) $ Just []
+        maybeRevMemlog <- execStateT (associateMemlogWithFunc func) $ Just mkAppList
         let revMemlog = fromMaybe (error "no memlog!") maybeRevMemlog
-        return $ Just $ HelperFuncOp $ reverse revMemlog
+        return $ Just $ HelperFuncOp $ unAppList revMemlog
 associateInst RetInst{} = put Nothing >> return Nothing
 associateInst _ = return Nothing
 
@@ -184,7 +186,7 @@ associateMemlogWithFunc func = addBlock $ head $ functionBody func
               maybeRevMemlogList <- get
               case maybeRevMemlogList of
                   Just revMemlogList -> 
-                      put $ Just $ (block, associated) : revMemlogList
+                      put $ Just $ revMemlogList +: (block, associated)
                   _ -> return ()
               case nextBlock of
                   Just nextBlock' -> addBlock nextBlock'
@@ -193,11 +195,11 @@ associateMemlogWithFunc func = addBlock $ head $ functionBody func
 type Interesting = ([Function], [Function], [Function])
 
 associateFuncs :: [MemlogOp] -> Interesting -> MemlogList
-associateFuncs ops (before, middle, _) = reverse revMemlogList
+associateFuncs ops (before, middle, _) = unAppList revMemlogList
     where revMemlogList = fromMaybe (error "No memlog list") maybeRevMemlogList
           (maybeRevMemlogList, leftoverOps) = runState (beforeM >> middleM) ops
           beforeM = execStateT (mapM_ associateMemlogWithFunc before) Nothing
-          middleM = execStateT (mapM_ associateMemlogWithFunc middle) $ Just []
+          middleM = execStateT (mapM_ associateMemlogWithFunc middle) $ Just mkAppList
 
 showAssociated :: MemlogList -> String
 showAssociated theList = L.intercalate "\n\n\n" $ map showBlock theList

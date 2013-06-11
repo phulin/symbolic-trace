@@ -6,6 +6,7 @@ import LLVM.Parse
 
 import Control.Applicative
 import Control.Monad
+import Control.Monad.Reader
 import Control.Monad.State.Lazy
 import Data.Aeson
 import Data.Maybe
@@ -27,6 +28,8 @@ import Memlog
 deriving instance Show Command
 deriving instance Show Response
 
+type SymbReader = Reader SymbolicState
+
 interesting :: String -> [Function] -> Interesting
 interesting focus fs = (before, reverse revOurs, reverse revAfter)
     where boring = not . L.isInfixOf focus . identifierAsString . functionName
@@ -34,24 +37,26 @@ interesting focus fs = (before, reverse revOurs, reverse revAfter)
           revAfterFirst = reverse afterFirst
           (revAfter, revOurs) = span boring revAfterFirst
 
-processCmd :: String -> IO Response
-processCmd s = case parseCmd s of
+processCmd :: SymbolicState -> String -> IO Response
+processCmd state s = case parseCmd s of
     Left err -> do
         putStrLn $ printf "Parse error: %s" err
         return $ ErrorResponse err
     Right cmd -> do
         putStrLn $ printf "executing command: %s" (show cmd)
-        return $ respond cmd
+        return $ runReader (respond cmd) state
     where parseCmd = eitherDecode . BS.pack :: String -> Either String Command
 
-respond :: Command -> Response
-respond WatchIP{} = ErrorResponse "unimplemented"
+respond :: Command -> SymbReader Response
+respond WatchIP{ commandIP = ip, commandLimit = limit }
+    = MessagesResponse <$> take limit <$> msgs
+    where msgs = M.findWithDefault [] ip <$> asks symbolicMessagesByIP
 
-process :: (Handle, HostName, PortNumber) -> IO ()
-process (handle, _, _) = do
+process :: SymbolicState -> (Handle, HostName, PortNumber) -> IO ()
+process state (handle, _, _) = do
     hPutStrLn handle "connected"
     commands <- lines <$> hGetContents handle
-    mapM_ (hPutStrLn handle <=< liftM show . processCmd) commands
+    mapM_ (hPutStrLn handle <=< liftM show . processCmd state) commands
 
 main :: IO ()
 main = do
@@ -59,7 +64,7 @@ main = do
     funcNameList <- lines <$> readFile "/tmp/llvm-functions.log"
     let findFunc name = fromMaybe (error $ "Couldn't find function " ++ name) $ findFunctionByName theMod name
     let funcList = map findFunc funcNameList
-    let interestingFuncs = interesting "sub_" funcList
+    let interestingFuncs = interesting "main" funcList
     memlog <- parseMemlog
     putStrLn "Aligning dynamic log data"
     let associated = associateFuncs memlog interestingFuncs
@@ -68,4 +73,4 @@ main = do
     let addr = UnixSocket "/tmp/reset.sock"
     sock <- listenOn addr
     putStrLn $ printf "Listening on %s" (show addr)
-    accept sock >>= process
+    accept sock >>= process state

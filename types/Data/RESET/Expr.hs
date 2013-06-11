@@ -11,7 +11,7 @@ deriving instance Ord CmpPredicate
 data Loc = IdLoc Identifier Identifier | MemLoc AddrEntry
     deriving (Eq, Ord)
 
-data ExprT = VoidT | PtrT | Int1T | Int8T | Int32T | Int64T | FloatT | DoubleT
+data ExprT = VoidT | PtrT | Int1T | Int8T | Int16T | Int32T | Int64T | FloatT | DoubleT
     | StructT [ExprT]
     deriving (Eq, Ord, Show)
 

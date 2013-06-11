@@ -4,7 +4,7 @@ import Debug.Trace
 
 import Data.Bits((.&.), (.|.), xor, shiftL, shiftR)
 import Data.LLVM.Types
-import Data.Word(Word8, Word32, Word64)
+import Data.Word(Word8, Word16, Word32, Word64)
 import Text.Printf(printf)
 
 import Data.RESET.Types
@@ -27,7 +27,9 @@ instance Pretty Loc where
 instance Pretty ExprT where
     pretty VoidT = "void"
     pretty PtrT = "ptr"
+    pretty Int1T = "i1"
     pretty Int8T = "i8"
+    pretty Int16T = "i16"
     pretty Int32T = "i32"
     pretty Int64T = "i64"
     pretty FloatT = "flt"
@@ -141,6 +143,7 @@ foldExpr fs (IrrelevantExpr) = irrelevantFolder fs
 bits :: ExprT -> Int
 bits Int1T = 1
 bits Int8T = 8
+bits Int16T = 16
 bits Int32T = 32
 bits Int64T = 64
 bits t = trace ("Unexpected argument to bits: " ++ show t) 64
@@ -184,10 +187,12 @@ simplify (AshrExpr _ (ILitExpr 0) _) = ILitExpr 0
 simplify (AshrExpr t (ILitExpr a) (ILitExpr b))
     = ILitExpr $ case t of
         Int8T -> fromIntegral $ shiftR a8 $ fromIntegral b
+        Int16T -> fromIntegral $ shiftR a16 $ fromIntegral b
         Int32T -> fromIntegral $ shiftR a32 $ fromIntegral b
         Int64T -> fromIntegral $ shiftR a64 $ fromIntegral b
     where a64 = (fromIntegral a) :: Word64
           a32 = (fromIntegral a) :: Word32
+          a16 = (fromIntegral a) :: Word16
           a8 = (fromIntegral a) :: Word8
 simplify (AshrExpr t e1 e2) = AshrExpr t (simplify e1) (simplify e2)
 simplify (AndExpr t (ILitExpr a) (ILitExpr b)) = ILitExpr $ (a .&. b) `rem` (2 ^ bits t)
@@ -295,6 +300,7 @@ simplify e = e
 typeToExprT :: Type -> ExprT
 typeToExprT (TypeInteger 1) = Int1T
 typeToExprT (TypeInteger 8) = Int8T
+typeToExprT (TypeInteger 16) = Int16T
 typeToExprT (TypeInteger 32) = Int32T
 typeToExprT (TypeInteger 64) = Int32T
 typeToExprT (TypePointer _ _) = PtrT

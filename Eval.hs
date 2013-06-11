@@ -1,7 +1,7 @@
 {-# LANGUAGE FlexibleInstances, FlexibleContexts, UndecidableInstances, GeneralizedNewtypeDeriving, MultiParamTypeClasses, StandaloneDeriving #-}
 -- Symbolic evaluator for basic blocks
 
-module Eval(Symbolic(..), SymbolicState(..), noSymbolicState, runBlocks) where
+module Eval(Symbolic(..), SymbolicState(..), noSymbolicState, runBlocks, messages, messagesByIP, warnings) where
 
 import Data.LLVM.Types
 import qualified Data.List as L
@@ -19,6 +19,7 @@ import Control.Monad.Trans.Maybe
 import Text.Printf(printf)
 
 import Data.RESET.Types
+import AppList
 import Expr
 import Memlog
 import Pretty
@@ -46,12 +47,23 @@ data SymbolicState = SymbolicState {
         -- Map of names for free variables: loads from uninitialized memory
         symbolicVarNameMap :: M.Map (ExprT, AddrEntry) String,
         symbolicCurrentIP :: Maybe Word64,
-        symbolicWarnings :: [(Maybe Word64, String)],
-        symbolicMessages :: [(Maybe Word64, Message)],
-        symbolicMessagesByIP :: M.Map Word64 [Message],
+        symbolicWarnings :: AppList (Maybe Word64, String),
+        symbolicMessages :: AppList (Maybe Word64, Message),
+        symbolicMessagesByIP :: M.Map Word64 (AppList Message),
         symbolicSkipRest :: Bool,
         symbolicRetVal :: Maybe Expr
     } deriving (Eq, Ord, Show)
+
+messages :: SymbolicState -> [(Maybe Word64, Message)]
+messages = unAppList . symbolicMessages
+
+warnings :: SymbolicState -> [(Maybe Word64, String)]
+warnings = unAppList . symbolicWarnings
+
+messagesByIP :: Word64 -> SymbolicState -> [Message]
+messagesByIP ip SymbolicState{ symbolicMessagesByIP = msgMap }
+    = unAppList $ M.findWithDefault mkAppList ip msgMap
+
 -- Symbolic is our fundamental monad: it holds state about control flow and
 -- holds our knowledge of machine state.
 newtype Symbolic a = Symbolic{ unSymbolic :: State SymbolicState a }
@@ -122,21 +134,21 @@ inUserCode = do
 message :: Symbolicish m => Message -> m ()
 message msg = do
     maybeIP <- getCurrentIP
-    modify (\s -> s{ symbolicMessages = symbolicMessages s ++ [(maybeIP, msg)] })
+    modify (\s -> s{ symbolicMessages = symbolicMessages s +: (maybeIP, msg) })
     case maybeIP of
         Just ip -> do
             modify (\s -> s{ 
                 symbolicMessagesByIP = M.alter addMsg ip $ symbolicMessagesByIP s
             })
         Nothing -> return ()
-    where addMsg (Just msgs) = Just $ msgs ++ [msg]
-          addMsg Nothing = Just [msg]
+    where addMsg (Just msgs) = Just $ msgs +: msg
+          addMsg Nothing = Just $ singleAppList msg
 
 warning :: Symbolicish m => String -> m ()
 warning warn = do
     warnings <- symbolicWarnings <$> get
     ip <- getCurrentIP
-    modify (\s -> s{ symbolicWarnings = warnings ++ [(ip, warn)] })
+    modify (\s -> s{ symbolicWarnings = warnings +: (ip, warn) })
     message $ WarningMessage $ showWarning (ip, warn)
 
 showWarning :: (Maybe Word64, String) -> String
@@ -156,8 +168,8 @@ noSymbolicState = SymbolicState{ symbolicInfo = M.empty,
                                  symbolicFunction = error "No function.",
                                  symbolicVarNameMap = M.empty,
                                  symbolicCurrentIP = Nothing,
-                                 symbolicWarnings = [],
-                                 symbolicMessages = [],
+                                 symbolicWarnings = mkAppList,
+                                 symbolicMessages = mkAppList,
                                  symbolicMessagesByIP = M.empty,
                                  symbolicSkipRest = False,
                                  symbolicRetVal = Nothing }

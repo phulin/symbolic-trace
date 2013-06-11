@@ -49,8 +49,7 @@ processCmd state s = case parseCmd s of
 
 respond :: Command -> SymbReader Response
 respond WatchIP{ commandIP = ip, commandLimit = limit }
-    = MessagesResponse <$> take limit <$> msgs
-    where msgs = M.findWithDefault [] ip <$> asks symbolicMessagesByIP
+    = MessagesResponse <$> take limit <$> asks (messagesByIP ip)
 
 process :: SymbolicState -> (Handle, HostName, PortNumber) -> IO ()
 process state (handle, _, _) = do
@@ -70,6 +69,7 @@ main = do
     let associated = associateFuncs memlog interestingFuncs
     seq associated $ putStrLn "Running symbolic execution analysis"
     let state = execState (unSymbolic $ runBlocks associated) noSymbolicState
+    print $ symbolicWarnings state
     let addr = UnixSocket "/tmp/reset.sock"
     sock <- listenOn addr
     putStrLn $ printf "Listening on %s" (show addr)

@@ -1,4 +1,4 @@
-{-# LANGUAGE FlexibleInstances, FlexibleContexts, UndecidableInstances, GeneralizedNewtypeDeriving, MultiParamTypeClasses #-}
+{-# LANGUAGE FlexibleInstances, FlexibleContexts, UndecidableInstances, GeneralizedNewtypeDeriving, MultiParamTypeClasses, StandaloneDeriving #-}
 -- Symbolic evaluator for basic blocks
 
 module Eval(Symbolic(..), SymbolicState(..), noSymbolicState, runBlocks) where
@@ -18,6 +18,7 @@ import Control.Monad.Trans.Class(lift, MonadTrans)
 import Control.Monad.Trans.Maybe
 import Text.Printf(printf)
 
+import Data.RESET.Types
 import Expr
 import Memlog
 import Pretty
@@ -34,6 +35,8 @@ noLocInfo = LocInfo{
     locOrigin = Nothing
 }
 
+deriving instance Show Message
+
 -- Representation of our [partial] knowledge of machine state.
 type Info = M.Map Loc LocInfo
 data SymbolicState = SymbolicState {
@@ -44,7 +47,8 @@ data SymbolicState = SymbolicState {
         symbolicVarNameMap :: M.Map (ExprT, AddrEntry) String,
         symbolicCurrentIP :: Maybe Word64,
         symbolicWarnings :: [(Maybe Word64, String)],
-        symbolicMessages :: [String],
+        symbolicMessages :: [(Maybe Word64, Message)],
+        symbolicMessagesByIP :: M.Map Word64 [Message],
         symbolicSkipRest :: Bool,
         symbolicRetVal :: Maybe Expr
     } deriving (Eq, Ord, Show)
@@ -115,17 +119,25 @@ inUserCode = do
             | currentIP >= 2 ^ 32 -> False
         _ -> True
 
-message :: Symbolicish m => String -> m ()
+message :: Symbolicish m => Message -> m ()
 message msg = do
-    messages <- symbolicMessages <$> get
-    whenM inUserCode $
-        modify (\s -> s{ symbolicMessages = messages ++ [msg] })
+    maybeIP <- getCurrentIP
+    modify (\s -> s{ symbolicMessages = symbolicMessages s ++ [(maybeIP, msg)] })
+    case maybeIP of
+        Just ip -> do
+            modify (\s -> s{ 
+                symbolicMessagesByIP = M.alter addMsg ip $ symbolicMessagesByIP s
+            })
+        Nothing -> return ()
+    where addMsg (Just msgs) = Just $ msgs ++ [msg]
+          addMsg Nothing = Just [msg]
+
 warning :: Symbolicish m => String -> m ()
 warning warn = do
     warnings <- symbolicWarnings <$> get
     ip <- getCurrentIP
     modify (\s -> s{ symbolicWarnings = warnings ++ [(ip, warn)] })
-    message $ "WARNING: " ++ showWarning (ip, warn)
+    message $ WarningMessage $ showWarning (ip, warn)
 
 showWarning :: (Maybe Word64, String) -> String
 showWarning (ip, s) = printf " - (%s) %s" (printIP ip) s
@@ -146,6 +158,7 @@ noSymbolicState = SymbolicState{ symbolicInfo = M.empty,
                                  symbolicCurrentIP = Nothing,
                                  symbolicWarnings = [],
                                  symbolicMessages = [],
+                                 symbolicMessagesByIP = M.empty,
                                  symbolicSkipRest = False,
                                  symbolicRetVal = Nothing }
 
@@ -219,7 +232,7 @@ maybeToM (Nothing) = fail ""
 identifierToExpr :: Identifier -> BuildExpr Expr
 identifierToExpr name = do
     func <- getCurrentFunction
-    value <- valueAt (IdLoc func name)
+    value <- valueAt (idLoc func name)
     case value of
         IrrelevantExpr -> return IrrelevantExpr -- HACK!!! figure out why this is happening
         e -> return e
@@ -238,11 +251,11 @@ valueToExpr (ArgumentC (Argument{ argumentName = name,
                                   argumentType = argType })) = do
     func <- getCurrentFunction
     identifierToExpr name <|>
-        (return $ InputExpr (typeToExprT argType) (IdLoc func name))
+        (return $ InputExpr (typeToExprT argType) (idLoc func name))
 valueToExpr (GlobalVariableC GlobalVariable{ globalVariableName = name,
                                              globalVariableType = varType }) = do
     func <- getCurrentFunction
-    return $ InputExpr (typeToExprT varType) (IdLoc func name)
+    return $ InputExpr (typeToExprT varType) (idLoc func name)
 valueToExpr val = warning ("Couldn't find expr for " ++ show val) >> fail ""
 
 lookupValue :: Value -> BuildExpr Expr
@@ -367,16 +380,15 @@ memInstToExpr (inst@LoadInst{ loadAddress = addrValue },
             expr <- (locExpr <$> maybeToM (M.lookup (MemLoc addrEntry) info)) <|>
                     (LoadExpr typ addrEntry <$> generateName typ addrEntry)
             stringIP <- getStringIP
-            addrString <-
+            origin <-
                 (do
                     addrExpr <- valueToExpr addrValue
-                    return $ show $ case addrExpr of
-                        IntToPtrExpr _ e -> e
-                        e -> e) <|>
-                return "unknown"
+                    return $ case addrExpr of
+                        IntToPtrExpr _ e -> Just e
+                        e -> Just e) <|>
+                return Nothing
             when (interestingOp expr addrEntry) $
-                message $ printf "LOAD  (%s): %s <=== %s [%s]"
-                    stringIP (show expr) (pretty addrEntry) addrString
+                message $ MemoryMessage LoadOp addrEntry expr origin
             return expr
 memInstToExpr (inst@SelectInst{ selectTrueValue = trueVal,
                                    selectFalseValue = falseVal },
@@ -395,16 +407,15 @@ storeUpdate (inst@StoreInst{ storeIsVolatile = False,
              (Just (AddrMemlogOp StoreOp addr))) = do
     value <- buildExprToMaybeExpr $ valueToExpr val
     currentIP <- getCurrentIP
-    addrString <-
+    origin <-
         (do
             addrExpr <- buildExprToMaybeExpr $ valueToExpr addrValue
-            return $ show $ case addrExpr of
+            return $ Just $ case addrExpr of
                 IntToPtrExpr _ e -> e
                 e -> e) <|>
-        return "unknown"
+        return Nothing
     when (interestingOp value addr) $
-        message $ printf "STORE (%s): %s ===> %s [%s]"
-            (printIP currentIP) (show value) (pretty addr) addrString
+        message $ MemoryMessage StoreOp addr value origin
     let locInfo = noLocInfo{ locExpr = value, locOrigin = currentIP }
     locInfoInsert (MemLoc addr) locInfo
 -- This will trigger twice with each IP update, but that's okay because the
@@ -426,7 +437,7 @@ exprUpdate instOp@(inst, _) = do
     currentIP <- getCurrentIP
     let simplified = simplify expr
     let locInfo = noLocInfo{ locExpr = simplified, locOrigin = currentIP }
-    locInfoInsert (IdLoc func id) locInfo
+    locInfoInsert (idLoc func id) locInfo
 
 ignoreUpdate :: (Instruction, Maybe MemlogOp) -> MaybeSymb ()
 ignoreUpdate (AllocaInst{}, _) = return ()
@@ -447,18 +458,14 @@ controlFlowUpdate (RetInst{ retInstValue = Just val }, _) = do
     expr <- buildExprToMaybeExpr (valueToExpr val)
     putRetVal $ Just expr
 controlFlowUpdate (RetInst{}, _) = return ()
-controlFlowUpdate (UnconditionalBranchInst{}, _) = do
-    currentIP <- getCurrentIP
-    message $ printf "BRANCH (%s)\n" (printIP currentIP)
+controlFlowUpdate (UnconditionalBranchInst{}, _)
+    = message UnconditionalBranchMessage
 controlFlowUpdate (BranchInst{ branchTrueTarget = trueTarget,
                                branchFalseTarget = falseTarget,
                                branchCondition = cond },
                    Just (BranchOp idx)) = void $ optional $ do
-        condExpr <- buildExprToMaybeExpr $ valueToExpr cond
-        currentIP <- getCurrentIP
-        let resultString = if idx == 0 then "TRUE" else "FALSE"
-        message $ printf "BRANCH (%s): %s; %s\n"
-            (printIP currentIP) (show condExpr) resultString
+    condExpr <- buildExprToMaybeExpr $ valueToExpr cond
+    message $ BranchMessage condExpr (idx == 0)
 controlFlowUpdate (SwitchInst{}, _) = return ()
 controlFlowUpdate (inst@CallInst{ callArguments = argVals,
                                   callFunction = FunctionC func },
@@ -468,7 +475,7 @@ controlFlowUpdate (inst@CallInst{ callArguments = argVals,
     -- Pass arguments through
     argExprs <- mapM (buildExprToMaybeExpr . valueToExpr . fst) argVals
     let argNames = map argumentName $ functionParameters func
-    let locs = map (IdLoc func) argNames
+    let locs = map (idLoc func) argNames
     let argLocInfos = [ noLocInfo{ locExpr = e } | e <- argExprs ]
     zipWithM locInfoInsert locs argLocInfos 
     -- Run and grab return value
@@ -479,7 +486,7 @@ controlFlowUpdate (inst@CallInst{ callArguments = argVals,
         id <- maybeToM $ instructionName inst
         currentIP <- getCurrentIP
         let locInfo = noLocInfo{ locExpr = val, locOrigin = currentIP }
-        locInfoInsert (IdLoc currentFunc id) locInfo
+        locInfoInsert (idLoc currentFunc id) locInfo
     -- Restore old function
     putCurrentFunction currentFunc
 controlFlowUpdate (CallInst{ callFunction = ExternalFunctionC func }, _)

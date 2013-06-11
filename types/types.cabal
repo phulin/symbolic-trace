@@ -1,0 +1,8 @@
+Name:              reset-types
+Version:           0.0
+Build-Type:        Simple
+Cabal-Version:     >= 1.2
+
+Library
+    Exposed-Modules: Data.RESET.Types, Data.RESET.Message, Data.RESET.Memlog, Data.RESET.Expr
+    Build-Depends: base, aeson, llvm-base-types

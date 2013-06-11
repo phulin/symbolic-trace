@@ -1,4 +1,4 @@
-module Expr(Loc(..), ExprT(..), Expr(..), simplify, exprTOfInst, typeToExprT, ExprFolders(..), constFolders, foldExpr) where
+module Expr(simplify, exprTOfInst, typeToExprT, ExprFolders(..), constFolders, foldExpr, idLoc) where
 
 import Debug.Trace
 
@@ -7,25 +7,22 @@ import Data.LLVM.Types
 import Data.Word(Word8, Word32, Word64)
 import Text.Printf(printf)
 
+import Data.RESET.Types
 import Memlog(AddrEntry(..), AddrEntryType(..))
 import Pretty(Pretty, pretty)
 
 import qualified Data.List as L
 
-data Loc = IdLoc Function Identifier | MemLoc AddrEntry
-    deriving (Eq, Ord)
+idLoc :: Function -> Identifier -> Loc
+idLoc f id = IdLoc (functionName f) id
 
 instance Show Loc where
-    show (IdLoc f id) = printf "IdLoc %s %s" (show $ functionName f) (show id)
+    show (IdLoc f id) = printf "IdLoc %s %s" (show f) (show id)
     show (MemLoc addr) = printf "MemLoc (%s)" (show addr)
 
 instance Pretty Loc where
-    pretty (IdLoc f id) = printf "%s: %s" (show $ functionName f) (show id)
+    pretty (IdLoc f id) = printf "%s: %s" (show f) (show id)
     pretty (MemLoc addr) = pretty addr
-
-data ExprT = VoidT | PtrT | Int1T | Int8T | Int32T | Int64T | FloatT | DoubleT
-    | StructT [ExprT]
-    deriving (Eq, Ord, Show)
 
 instance Pretty ExprT where
     pretty VoidT = "void"
@@ -48,43 +45,6 @@ instance Pretty CmpPredicate where
     pretty ICmpUlt = "<u"
     pretty ICmpUle = "<=u"
     pretty p = "?" ++ (show p) ++ "?"
-
-data Expr =
-    AddExpr ExprT Expr Expr |
-    SubExpr ExprT Expr Expr |
-    MulExpr ExprT Expr Expr |
-    DivExpr ExprT Expr Expr |
-    RemExpr ExprT Expr Expr |
-    ShlExpr ExprT Expr Expr |
-    LshrExpr ExprT Expr Expr |
-    AshrExpr ExprT Expr Expr |
-    AndExpr ExprT Expr Expr |
-    OrExpr ExprT Expr Expr |
-    XorExpr ExprT Expr Expr |
-    TruncExpr ExprT Expr |
-    ZExtExpr ExprT Expr |
-    SExtExpr ExprT Expr |
-    FPTruncExpr ExprT Expr |
-    FPExtExpr ExprT Expr |
-    FPToSIExpr ExprT Expr |
-    FPToUIExpr ExprT Expr |
-    SIToFPExpr ExprT Expr |
-    UIToFPExpr ExprT Expr |
-    PtrToIntExpr ExprT Expr |
-    IntToPtrExpr ExprT Expr |
-    BitcastExpr ExprT Expr |
-    -- Type, dynamic address, and name.
-    LoadExpr ExprT AddrEntry (Maybe String) |
-    ICmpExpr CmpPredicate Expr Expr |
-    ILitExpr Integer | -- takes any integer type
-    FLitExpr Double | -- takes any float type
-    InputExpr ExprT Loc |
-    StubExpr ExprT String [Expr] |
-    IntrinsicExpr ExprT ExternalFunction [Expr] |
-    ExtractExpr ExprT Int Expr |
-    GEPExpr | -- dummy expression for getelementptr instructions
-    IrrelevantExpr
-    deriving (Eq, Ord)
 
 instance Show Expr where
     show (AddExpr _ e1 e2) = printf "(%s + %s)" (show e1) (show e2)
@@ -345,4 +305,3 @@ typeToExprT t = trace (printf "making VoidT from %s" (show t)) VoidT
 
 exprTOfInst :: Instruction -> ExprT
 exprTOfInst = typeToExprT . instructionType
-

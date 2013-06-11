@@ -17,6 +17,7 @@ import qualified Data.List as L
 import qualified Data.Map as M
 import qualified Data.Set as S
 
+import Data.RESET.Types
 import Instances
 import Pretty
 
@@ -27,17 +28,6 @@ data MemlogOp = AddrMemlogOp AddrOp AddrEntry |
                 SwitchOp Word32 | 
                 ExceptionOp |
                 HelperFuncOp MemlogList -- For calls out to helper functions
-    deriving (Eq, Ord, Show)
-data AddrOp = LoadOp | StoreOp | BranchAddrOp | SelectAddrOp | SwitchAddrOp
-    deriving (Eq, Ord, Show, Enum)
-data AddrEntry = AddrEntry { addrType :: AddrEntryType
-                           , addrVal :: Word64
-                           , addrOff :: Word32
-                           , addrFlag :: AddrFlag }
-    deriving (Eq, Ord, Show)
-data AddrEntryType = HAddr | MAddr | IAddr | LAddr | GReg | GSpec | Unk | Const | Ret
-    deriving (Eq, Ord, Show, Enum)
-data AddrFlag = IrrelevantFlag | NoFlag | ExceptionFlag | ReadlogFlag | FuncargFlag
     deriving (Eq, Ord, Show)
 
 instance Pretty AddrEntry where

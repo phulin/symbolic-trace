@@ -1,7 +1,7 @@
 {-# LANGUAGE FlexibleInstances, FlexibleContexts, UndecidableInstances, GeneralizedNewtypeDeriving, MultiParamTypeClasses, StandaloneDeriving #-}
 -- Symbolic evaluator for basic blocks
 
-module Eval(Symbolic(..), SymbolicState(..), noSymbolicState, runBlocks, messages, messagesByIP, warnings, showWarning) where
+module Eval(Symbolic(..), SymbolicState(..), noSymbolicState, runBlocks, messages, messagesByIP, warnings, showWarning, numInstructions) where
 
 import Data.LLVM.Types
 import qualified Data.List as L
@@ -51,7 +51,9 @@ data SymbolicState = SymbolicState {
         symbolicMessages :: AppList (Maybe Word64, Message),
         symbolicMessagesByIP :: M.Map Word64 (AppList Message),
         symbolicSkipRest :: Bool,
-        symbolicRetVal :: Maybe Expr
+        symbolicRetVal :: Maybe Expr,
+        symbolicTotalInstructions :: Int,
+        symbolicInstructionsProcessed :: Int
     } deriving (Eq, Ord, Show)
 
 messages :: SymbolicState -> [(Maybe Word64, Message)]
@@ -94,6 +96,12 @@ putCurrentFunction f = modify (\s -> s{ symbolicFunction = f })
 putCurrentIP :: Symbolicish m => Maybe Word64 -> m ()
 putCurrentIP newIP = modify (\s -> s{ symbolicCurrentIP = newIP })
 putRetVal retVal = modify (\s -> s{ symbolicRetVal = retVal })
+
+countInst :: Symbolicish m => m ()
+countInst = do
+    insts <- symbolicInstructionsProcessed <$> get
+    when (insts `rem` 10000 == 0) $ traceShow insts $ return ()
+    modify (\s -> s{ symbolicInstructionsProcessed = insts + 1 })
 
 skipRest :: Symbolicish m => m ()
 skipRest = modify (\s -> s{ symbolicSkipRest = True })
@@ -163,16 +171,20 @@ exprFindInfo def key = locExpr <$> M.findWithDefault defLocInfo key <$> getInfo
     where defLocInfo = noLocInfo{ locExpr = def }
 
 noSymbolicState :: SymbolicState
-noSymbolicState = SymbolicState{ symbolicInfo = M.empty,
-                                 symbolicPreviousBlock = Nothing,
-                                 symbolicFunction = error "No function.",
-                                 symbolicVarNameMap = M.empty,
-                                 symbolicCurrentIP = Nothing,
-                                 symbolicWarnings = mkAppList,
-                                 symbolicMessages = mkAppList,
-                                 symbolicMessagesByIP = M.empty,
-                                 symbolicSkipRest = False,
-                                 symbolicRetVal = Nothing }
+noSymbolicState = SymbolicState{
+    symbolicInfo = M.empty,
+    symbolicPreviousBlock = Nothing,
+    symbolicFunction = error "No function.",
+    symbolicVarNameMap = M.empty,
+    symbolicCurrentIP = Nothing,
+    symbolicWarnings = mkAppList,
+    symbolicMessages = mkAppList,
+    symbolicMessagesByIP = M.empty,
+    symbolicSkipRest = False,
+    symbolicRetVal = Nothing,
+    symbolicTotalInstructions = error "Need total instr count.",
+    symbolicInstructionsProcessed = 0
+}
 
 valueAt :: Symbolicish m => Loc -> m Expr
 valueAt loc = exprFindInfo (InputExpr Int64T loc) loc
@@ -520,6 +532,7 @@ infoUpdaters = [ ignoreUpdate,
 
 updateInfo :: (Instruction, Maybe MemlogOp) -> Symbolic ()
 updateInfo instOp@(inst, _) = do
+    countInst
     skip <- getSkipRest
     unless skip $ void $ runMaybeT $ foldl1 (<||>) infoUpdaters instOp
 
@@ -535,6 +548,15 @@ runBlock (block, instOpList) = do
 isMemLoc :: Loc -> Bool
 isMemLoc MemLoc{} = True
 isMemLoc _ = False
+
+numInstructions :: MemlogList -> Int
+numInstructions = sum . map (numBlockInstructions . snd)
+
+numBlockInstructions :: InstOpList -> Int
+numBlockInstructions ((_, Just (HelperFuncOp memlog)) : xs)
+    = 1 + numInstructions memlog + numBlockInstructions xs
+numBlockInstructions (x : xs) = 1 + numBlockInstructions xs
+numBlockInstructions [] = 0
 
 runBlocks :: MemlogList -> Symbolic (Maybe Expr)
 runBlocks blocks = do

@@ -63,12 +63,15 @@ main = do
     funcNameList <- lines <$> readFile "/tmp/llvm-functions.log"
     let findFunc name = fromMaybe (error $ "Couldn't find function " ++ name) $ findFunctionByName theMod name
     let funcList = map findFunc funcNameList
-    let interestingFuncs = interesting "main" funcList
+    let interestingFuncs = interesting "sub_" funcList
     memlog <- parseMemlog
     putStrLn "Aligning dynamic log data"
     let associated = associateFuncs memlog interestingFuncs
-    seq associated $ putStrLn "Running symbolic execution analysis"
-    let state = execState (unSymbolic $ runBlocks associated) noSymbolicState
+    let instructionCount = numInstructions associated
+    seq associated $ putStrLn $
+        printf "Running symbolic execution analysis with %d instructions"
+            instructionCount
+    let state = execState (unSymbolic $ runBlocks associated) noSymbolicState{ symbolicTotalInstructions = instructionCount }
     unless (null $ warnings state) $ do
         putStrLn "Warnings:"
         putStrLn $ L.intercalate "\n" $ map showWarning $ warnings state

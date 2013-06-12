@@ -22,9 +22,9 @@ data Response =
 data Message =
     MemoryMessage{ messageOp :: AddrOp,
                    messageAddr :: AddrEntry,
-                   messageExpr :: Expr,
-                   messageOrigin :: Maybe Expr } |
-    BranchMessage{ messageExpr :: Expr,
+                   messageExpr :: String,
+                   messageOrigin :: String } |
+    BranchMessage{ messageExpr :: String,
                    messageTaken :: Bool } |
     UnconditionalBranchMessage |
     WarningMessage{ messageWarning :: String }

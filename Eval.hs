@@ -400,7 +400,7 @@ memInstToExpr (inst@LoadInst{ loadAddress = addrValue },
                         e -> Just e) <|>
                 return Nothing
             when (interestingOp expr addrEntry) $
-                message $ MemoryMessage LoadOp addrEntry expr origin
+                message $ MemoryMessage LoadOp addrEntry (show expr) (show origin)
             return expr
 memInstToExpr (inst@SelectInst{ selectTrueValue = trueVal,
                                    selectFalseValue = falseVal },
@@ -427,7 +427,7 @@ storeUpdate (inst@StoreInst{ storeIsVolatile = False,
                 e -> e) <|>
         return Nothing
     when (interestingOp value addr) $
-        message $ MemoryMessage StoreOp addr value origin
+        message $ MemoryMessage StoreOp addr (show value) (show origin)
     let locInfo = noLocInfo{ locExpr = value, locOrigin = currentIP }
     locInfoInsert (MemLoc addr) locInfo
 -- This will trigger twice with each IP update, but that's okay because the
@@ -477,7 +477,7 @@ controlFlowUpdate (BranchInst{ branchTrueTarget = trueTarget,
                                branchCondition = cond },
                    Just (BranchOp idx)) = void $ optional $ do
     condExpr <- buildExprToMaybeExpr $ valueToExpr cond
-    message $ BranchMessage condExpr (idx == 0)
+    message $ BranchMessage (show condExpr) (idx == 0)
 controlFlowUpdate (SwitchInst{}, _) = return ()
 controlFlowUpdate (inst@CallInst{ callArguments = argVals,
                                   callFunction = FunctionC func },

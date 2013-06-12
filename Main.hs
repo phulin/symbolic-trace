@@ -55,7 +55,7 @@ process :: SymbolicState -> (Handle, HostName, PortNumber) -> IO ()
 process state (handle, _, _) = do
     hPutStrLn handle "connected"
     commands <- lines <$> hGetContents handle
-    mapM_ (hPutStrLn handle <=< liftM show . processCmd state) commands
+    mapM_ (BS.hPutStrLn handle <=< liftM encode . processCmd state) commands
 
 main :: IO ()
 main = do

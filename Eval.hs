@@ -501,10 +501,14 @@ controlFlowUpdate (inst@CallInst{ callArguments = argVals,
         locInfoInsert (idLoc currentFunc id) locInfo
     -- Restore old function
     putCurrentFunction currentFunc
-controlFlowUpdate (CallInst{ callFunction = ExternalFunctionC func }, _)
-    | identifierAsString (externalFunctionName func) == "cpu_loop_exit"
+controlFlowUpdate (CallInst{ callFunction = ExternalFunctionC func,
+                             callAttrs = attrs }, _)
+    | FANoReturn `elem` externalFunctionAttrs func = skipRest
+    | FANoReturn `elem` attrs = skipRest
+    | "cpu_loop_exit" == identifierAsString (externalFunctionName func)
         = skipRest
-controlFlowUpdate (UnreachableInst{}, _) = warning "UNREACHABLE INSTRUCTION!"
+controlFlowUpdate (inst@UnreachableInst{}, _)
+    = traceShow (instructionBasicBlock inst) $ warning "UNREACHABLE INSTRUCTION!"
 controlFlowUpdate _ = fail ""
 
 infoUpdaters :: [(Instruction, Maybe MemlogOp) -> MaybeSymb ()]
@@ -523,8 +527,8 @@ runBlock :: (BasicBlock, InstOpList) -> Symbolic (Maybe Expr)
 runBlock (block, instOpList) = do
     putCurrentFunction $ basicBlockFunction block 
     putRetVal Nothing
-    mapM updateInfo instOpList
     clearSkipRest
+    mapM updateInfo instOpList
     putPreviousBlock $ Just block
     getRetVal
 

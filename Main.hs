@@ -69,7 +69,9 @@ main = do
     let associated = associateFuncs memlog interestingFuncs
     seq associated $ putStrLn "Running symbolic execution analysis"
     let state = execState (unSymbolic $ runBlocks associated) noSymbolicState
-    print $ symbolicWarnings state
+    unless (null $ warnings state) $ do
+        putStrLn "Warnings:"
+        putStrLn $ L.intercalate "\n" $ map showWarning $ warnings state
     let addr = UnixSocket "/tmp/reset.sock"
     sock <- listenOn addr
     putStrLn $ printf "Listening on %s" (show addr)

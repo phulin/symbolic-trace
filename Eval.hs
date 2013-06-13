@@ -337,8 +337,6 @@ interestingOp :: Expr -> AddrEntry -> Bool
 interestingOp _ AddrEntry{ addrFlag = IrrelevantFlag } = False
 interestingOp _ AddrEntry{ addrType = GReg, addrVal = reg }
     | reg >= 16 = False
-interestingOp e _
-    | usesEsp e = False
 interestingOp _ _ = True
 
 findIncomingValue :: BasicBlock -> [(Value, Value)] -> Value

@@ -376,7 +376,7 @@ otherInstToExpr inst@ICmpInst{ cmpPredicate = pred,
                               cmpV2 = val2 } = do
     expr1 <- valueToExpr val1
     expr2 <- valueToExpr val2
-    return $ ICmpExpr pred (simplify expr1) (simplify expr2)
+    return $ ICmpExpr pred expr1 expr2
 otherInstToExpr _ = fail ""
 
 t :: (Show a) => a -> a
@@ -459,8 +459,7 @@ exprUpdate instOp@(inst, _) = do
     let builtExpr = foldl1 (<||>) instToExprs inst <|> memInstToExpr instOp
     expr <- buildExprToMaybeExpr builtExpr
     currentIP <- getCurrentIP
-    let simplified = simplify expr
-    let locInfo = noLocInfo{ locExpr = simplified, locOrigin = currentIP }
+    let locInfo = noLocInfo{ locExpr = expr, locOrigin = currentIP }
     locInfoInsert (idLoc func id) locInfo
 
 ignoreUpdate :: (Instruction, Maybe MemlogOp) -> MaybeSymb ()

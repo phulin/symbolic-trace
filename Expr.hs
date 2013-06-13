@@ -49,42 +49,45 @@ instance Pretty CmpPredicate where
     pretty p = "?" ++ (show p) ++ "?"
 
 instance Show Expr where
-    show (AddExpr _ e1 e2) = printf "(%s + %s)" (show e1) (show e2)
-    show (SubExpr _ e1 e2) = printf "(%s - %s)" (show e1) (show e2)
-    show (MulExpr _ e1 e2) = printf "(%s * %s)" (show e1) (show e2)
-    show (DivExpr _ e1 e2) = printf "(%s / %s)" (show e1) (show e2)
-    show (RemExpr _ e1 e2) = printf "(%s %% %s)" (show e1) (show e2)
-    show (ShlExpr _ e1 e2) = printf "(%s << %s)" (show e1) (show e2)
-    show (LshrExpr _ e1 e2) = printf "(%s L>> %s)" (show e1) (show e2)
-    show (AshrExpr _ e1 e2) = printf "(%s A>> %s)" (show e1) (show e2)
-    show (AndExpr _ e1 e2) = printf "(%s & %s)" (show e1) (show e2)
-    show (OrExpr _ e1 e2) = printf "(%s | %s)" (show e1) (show e2)
-    show (XorExpr _ e1 e2) = printf "(%s ^ %s)" (show e1) (show e2)
-    show (TruncExpr t e) = printf "T%d(%s)" (bits t) (show e)
-    show (ZExtExpr t e) = printf "ZX%d(%s)" (bits t) (show e)
-    show (SExtExpr t e) = printf "SX%d(%s)" (bits t) (show e)
-    show (FPTruncExpr _ e) = printf "FPTrunc(%s)" (show e)
-    show (FPExtExpr _ e) = printf "FPExt(%s)" (show e)
-    show (FPToSIExpr _ e) = printf "FPToSI(%s)" (show e)
-    show (FPToUIExpr _ e) = printf "FPToUI(%s)" (show e)
-    show (SIToFPExpr _ e) = printf "SIToFP(%s)" (show e)
-    show (UIToFPExpr _ e) = printf "UIToFP(%s)" (show e)
-    show (PtrToIntExpr _ e) = printf "PtrToInt(%s)" (show e)
-    show (IntToPtrExpr _ e) = printf "IntToPtr(%s)" (show e)
-    show (BitcastExpr _ e) = printf "Bitcast(%s)" (show e)
-    show (LoadExpr _ _ (Just name)) = printf "%%%s" name
-    show (LoadExpr _ addr@AddrEntry{ addrType = GReg } _) = printf "%s" (pretty addr)
-    show (LoadExpr _ addr _) = printf "*%s" (pretty addr)
-    show (ICmpExpr pred e1 e2) = printf "%s %s %s" (show e1) (pretty pred) (show e2)
-    show (ILitExpr i) = if i >= 256 then printf "0x%x" i else show i
-    show (FLitExpr f) = show f
-    show (InputExpr _ loc) = printf "(%s)" (show loc)
-    show (StubExpr _ f es) = printf "%s(%s)" f (L.intercalate ", " $ map show es)
-    show (IntrinsicExpr _ f es) = printf "%s(%s)" (show $ externalFunctionName f)
-        (L.intercalate ", " $ map show es)
-    show (ExtractExpr _ idx e) = printf "%s[%d]" (show e) idx
-    show (GEPExpr) = "GEP"
-    show (IrrelevantExpr) = "IRRELEVANT"
+    show = sh . simplify
+
+sh :: Expr -> String
+sh (AddExpr _ e1 e2) = printf "(%s + %s)" (sh e1) (sh e2)
+sh (SubExpr _ e1 e2) = printf "(%s - %s)" (sh e1) (sh e2)
+sh (MulExpr _ e1 e2) = printf "(%s * %s)" (sh e1) (sh e2)
+sh (DivExpr _ e1 e2) = printf "(%s / %s)" (sh e1) (sh e2)
+sh (RemExpr _ e1 e2) = printf "(%s %% %s)" (sh e1) (sh e2)
+sh (ShlExpr _ e1 e2) = printf "(%s << %s)" (sh e1) (sh e2)
+sh (LshrExpr _ e1 e2) = printf "(%s L>> %s)" (sh e1) (sh e2)
+sh (AshrExpr _ e1 e2) = printf "(%s A>> %s)" (sh e1) (sh e2)
+sh (AndExpr _ e1 e2) = printf "(%s & %s)" (sh e1) (sh e2)
+sh (OrExpr _ e1 e2) = printf "(%s | %s)" (sh e1) (sh e2)
+sh (XorExpr _ e1 e2) = printf "(%s ^ %s)" (sh e1) (sh e2)
+sh (TruncExpr t e) = printf "T%d(%s)" (bits t) (sh e)
+sh (ZExtExpr t e) = printf "ZX%d(%s)" (bits t) (sh e)
+sh (SExtExpr t e) = printf "SX%d(%s)" (bits t) (sh e)
+sh (FPTruncExpr _ e) = printf "FPTrunc(%s)" (sh e)
+sh (FPExtExpr _ e) = printf "FPExt(%s)" (sh e)
+sh (FPToSIExpr _ e) = printf "FPToSI(%s)" (sh e)
+sh (FPToUIExpr _ e) = printf "FPToUI(%s)" (sh e)
+sh (SIToFPExpr _ e) = printf "SIToFP(%s)" (sh e)
+sh (UIToFPExpr _ e) = printf "UIToFP(%s)" (sh e)
+sh (PtrToIntExpr _ e) = printf "PtrToInt(%s)" (sh e)
+sh (IntToPtrExpr _ e) = printf "IntToPtr(%s)" (sh e)
+sh (BitcastExpr _ e) = printf "Bitcast(%s)" (sh e)
+sh (LoadExpr _ _ (Just name)) = printf "%%%s" name
+sh (LoadExpr _ addr@AddrEntry{ addrType = GReg } _) = printf "%s" (pretty addr)
+sh (LoadExpr _ addr _) = printf "*%s" (pretty addr)
+sh (ICmpExpr pred e1 e2) = printf "%s %s %s" (sh e1) (pretty pred) (sh e2)
+sh (ILitExpr i) = if i >= 256 then printf "0x%x" i else show i
+sh (FLitExpr f) = show f
+sh (InputExpr _ loc) = printf "(%s)" (show loc)
+sh (StubExpr _ f es) = printf "%s(%s)" f (L.intercalate ", " $ map sh es)
+sh (IntrinsicExpr _ f es) = printf "%s(%s)" (show $ externalFunctionName f)
+    (L.intercalate ", " $ map sh es)
+sh (ExtractExpr _ idx e) = printf "%s[%d]" (sh e) idx
+sh (GEPExpr) = "GEP"
+sh (IrrelevantExpr) = "IRRELEVANT"
 
 data ExprFolders a = ExprFolders {
     iLitFolder :: Integer -> a,

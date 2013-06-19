@@ -62,6 +62,7 @@ process state (handle, _, _) = do
 main :: IO ()
 main = do
     hSetBuffering stdout NoBuffering
+    putStrLn "Loading LLVM module from /tmp/llvm-mod.bc."
     theMod <- parseLLVMFile defaultParserOptions "/tmp/llvm-mod.bc"
     funcNameList <- lines <$> readFile "/tmp/llvm-functions.log"
     let findFunc name = fromMaybe (error $ "Couldn't find function " ++ name) $ findFunctionByName theMod name

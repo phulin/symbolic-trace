@@ -62,12 +62,18 @@ process state (handle, _, _) = do
 main :: IO ()
 main = do
     hSetBuffering stdout NoBuffering
+
+    -- Load LLVM files and dynamic logs
     putStrLn "Loading LLVM module from /tmp/llvm-mod.bc."
     theMod <- parseLLVMFile defaultParserOptions "/tmp/llvm-mod.bc"
+    putStrLn "Parsing execution log."
     funcNameList <- lines <$> readFile "/tmp/llvm-functions.log"
     let findFunc name = fromMaybe (error $ "Couldn't find function " ++ name) $ findFunctionByName theMod name
     let funcList = map findFunc funcNameList
     let interestingFuncs = interesting "sub_" funcList
+
+    -- Align dynamic log with execution history
+    putStrLn "Loading dynamic log."
     memlog <- parseMemlog
     putStr "Aligning dynamic log data..."
     let associated = associateFuncs memlog interestingFuncs
@@ -75,11 +81,15 @@ main = do
     seq associated $ putStrLn $
         printf " done.\nRunning symbolic execution analysis with %d instructions."
             instructionCount
+
+    -- Run symbolic execution analysis
     let (result, state) = runState (runProgressT $ runBlocks associated) noSymbolicState{ symbolicTotalInstructions = instructionCount }
     showProgress result
     unless (null $ warnings state) $ do
         putStrLn "Warnings:"
         putStrLn $ L.intercalate "\n" $ map showWarning $ warnings state
+
+    -- Serve requests for data from analysis
     let addr = PortNumber 22022
     sock <- listenOn addr
     putStrLn $ printf "Listening on %s." (show addr)

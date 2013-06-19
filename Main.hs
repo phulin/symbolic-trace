@@ -14,6 +14,7 @@ import Data.Word
 import Debug.Trace
 import Network
 import System.IO
+import System.IO.Error
 import Text.Printf
 
 import qualified Data.ByteString.Lazy.Char8 as BS
@@ -41,7 +42,7 @@ interesting focus fs = (before, reverse revOurs, reverse revAfter)
 processCmd :: SymbolicState -> String -> IO Response
 processCmd state s = case parseCmd s of
     Left err -> do
-        putStrLn $ printf "Parse error: %s" err
+        putStrLn $ printf "Parse error on %s:\n  %s" s err
         return $ ErrorResponse err
     Right cmd -> do
         putStrLn $ printf "executing command: %s" (show cmd)
@@ -54,7 +55,7 @@ respond WatchIP{ commandIP = ip, commandLimit = limit }
 
 process :: SymbolicState -> (Handle, HostName, PortNumber) -> IO ()
 process state (handle, _, _) = do
-    hPutStrLn handle "connected"
+    putStrLn "Client connected."
     commands <- lines <$> hGetContents handle
     mapM_ (BS.hPutStrLn handle <=< liftM encode . processCmd state) commands
 
@@ -67,18 +68,18 @@ main = do
     let funcList = map findFunc funcNameList
     let interestingFuncs = interesting "sub_" funcList
     memlog <- parseMemlog
-    putStrLn "Aligning dynamic log data"
+    putStr "Aligning dynamic log data..."
     let associated = associateFuncs memlog interestingFuncs
     let instructionCount = numInstructions associated
     seq associated $ putStrLn $
-        printf "Running symbolic execution analysis with %d instructions"
+        printf " done.\nRunning symbolic execution analysis with %d instructions."
             instructionCount
     let (result, state) = runState (runProgressT $ runBlocks associated) noSymbolicState{ symbolicTotalInstructions = instructionCount }
     showProgress result
     unless (null $ warnings state) $ do
         putStrLn "Warnings:"
         putStrLn $ L.intercalate "\n" $ map showWarning $ warnings state
-    let addr = UnixSocket "/tmp/reset.sock"
+    let addr = PortNumber 22022
     sock <- listenOn addr
-    putStrLn $ printf "Listening on %s" (show addr)
+    putStrLn $ printf "Listening on %s." (show addr)
     accept sock >>= process state

@@ -13,9 +13,7 @@ instance Functor Progress where
     f `fmap` ProgressLift x = ProgressLift $ f x
 
 showProgress :: Progress a -> IO a
-showProgress (Progress p px) = do
-    putStr $ printf "\r%.2f%%" $ 100 * p
-    showProgress px
+showProgress (Progress p px) = printf "\r%.2f%%" (100 * p) >> showProgress px
 showProgress (ProgressLift x) = putStrLn "\rDone.       " >> return x
 
 newtype ProgressT m a = ProgressT { runProgressT :: m (Progress a) }
@@ -29,10 +27,10 @@ instance (Monad m) => Monad (ProgressT m) where
               bind (ProgressLift y) f = runProgressT $ f y
 
 instance (Monad m) => Functor (ProgressT m) where
-    fmap f x = x >>= return . f
+    fmap f x = liftM f x
 
 instance MonadTrans ProgressT where
-    lift m = ProgressT $ m >>= return . ProgressLift
+    lift m = ProgressT $ liftM ProgressLift m
 
 instance (Monad m) => Applicative (ProgressT m) where
     pure = return
@@ -40,7 +38,3 @@ instance (Monad m) => Applicative (ProgressT m) where
 
 progress :: (Monad m) => Float -> ProgressT m ()
 progress p = ProgressT $ return $ Progress p $ ProgressLift ()
-
-progressDrop :: Progress a -> a
-progressDrop (Progress _ px) = progressDrop px
-progressDrop (ProgressLift x) = x

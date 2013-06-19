@@ -24,6 +24,7 @@ import qualified Data.Text as T
 import Data.RESET.Types
 import Eval
 import Memlog
+import Progress
 
 deriving instance Show Command
 deriving instance Show Response
@@ -59,6 +60,7 @@ process state (handle, _, _) = do
 
 main :: IO ()
 main = do
+    hSetBuffering stdout NoBuffering
     theMod <- parseLLVMFile defaultParserOptions "/tmp/llvm-mod.bc"
     funcNameList <- lines <$> readFile "/tmp/llvm-functions.log"
     let findFunc name = fromMaybe (error $ "Couldn't find function " ++ name) $ findFunctionByName theMod name
@@ -71,7 +73,8 @@ main = do
     seq associated $ putStrLn $
         printf "Running symbolic execution analysis with %d instructions"
             instructionCount
-    let state = execState (unSymbolic $ runBlocks associated) noSymbolicState{ symbolicTotalInstructions = instructionCount }
+    let (result, state) = runState (runProgressT $ runBlocks associated) noSymbolicState{ symbolicTotalInstructions = instructionCount }
+    showProgress result
     unless (null $ warnings state) $ do
         putStrLn "Warnings:"
         putStrLn $ L.intercalate "\n" $ map showWarning $ warnings state

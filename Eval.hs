@@ -23,6 +23,7 @@ import AppList
 import Expr
 import Memlog
 import Pretty
+import Progress
 
 data LocInfo = LocInfo{
     locExpr :: Expr,
@@ -68,8 +69,11 @@ messagesByIP ip SymbolicState{ symbolicMessagesByIP = msgMap }
 
 -- Symbolic is our fundamental monad: it holds state about control flow and
 -- holds our knowledge of machine state.
-newtype Symbolic a = Symbolic{ unSymbolic :: State SymbolicState a }
-    deriving (Functor, Applicative, Monad, MonadState SymbolicState)
+type Symbolic = ProgressT (State SymbolicState)
+--newtype Symbolic a = Symbolic{ unSymbolic :: ProgressT (State SymbolicState a) }
+    --deriving (Functor, Applicative, Monad, MonadState SymbolicState)
+instance MonadState SymbolicState Symbolic where
+    state = lift . state
 
 class (MonadState SymbolicState m, Functor m) => Symbolicish m where { }
 instance (MonadState SymbolicState m, Functor m) => Symbolicish m
@@ -97,10 +101,12 @@ putCurrentIP :: Symbolicish m => Maybe Word64 -> m ()
 putCurrentIP newIP = modify (\s -> s{ symbolicCurrentIP = newIP })
 putRetVal retVal = modify (\s -> s{ symbolicRetVal = retVal })
 
-countInst :: Symbolicish m => m ()
+countInst :: Symbolic ()
 countInst = do
     insts <- symbolicInstructionsProcessed <$> get
-    when (insts `rem` 10000 == 0) $ traceShow insts $ return ()
+    total <- symbolicTotalInstructions <$> get
+    when (insts `rem` 1000 == 0) $ 
+        progress $ fromIntegral insts / fromIntegral total
     modify (\s -> s{ symbolicInstructionsProcessed = insts + 1 })
 
 skipRest :: Symbolicish m => m ()
@@ -377,9 +383,6 @@ otherInstToExpr inst@ICmpInst{ cmpPredicate = pred,
     return $ ICmpExpr pred expr1 expr2
 otherInstToExpr _ = fail ""
 
-t :: (Show a) => a -> a
-t x = traceShow x x
-
 (<||>) :: Alternative f => (a -> f b) -> (a -> f b) -> a -> f b
 (<||>) f1 f2 a = f1 a <|> f2 a
 
@@ -516,8 +519,7 @@ controlFlowUpdate (CallInst{ callFunction = ExternalFunctionC func,
     | FANoReturn `elem` attrs = skipRest
     | "cpu_loop_exit" == identifierAsString (externalFunctionName func)
         = skipRest
-controlFlowUpdate (inst@UnreachableInst{}, _)
-    = traceShow (instructionBasicBlock inst) $ warning "UNREACHABLE INSTRUCTION!"
+controlFlowUpdate (inst@UnreachableInst{}, _) = warning "UNREACHABLE INSTRUCTION!"
 controlFlowUpdate _ = fail ""
 
 infoUpdaters :: [(Instruction, Maybe MemlogOp) -> MaybeSymb ()]

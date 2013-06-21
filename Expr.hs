@@ -5,6 +5,7 @@ import Debug.Trace
 import Data.Bits((.&.), (.|.), xor, shiftL, shiftR)
 import Data.LLVM.Types
 import Data.Word(Word8, Word16, Word32, Word64)
+import Text.PrettyPrint
 import Text.Printf(printf)
 
 import Data.RESET.Types
@@ -49,45 +50,51 @@ instance Pretty CmpPredicate where
     pretty p = "?" ++ (show p) ++ "?"
 
 instance Show Expr where
-    show = sh . simplify
+    show = renderStyle style{ mode = OneLineMode } . sh . simplify
 
-sh :: Expr -> String
-sh (AddExpr _ e1 e2) = printf "(%s + %s)" (sh e1) (sh e2)
-sh (SubExpr _ e1 e2) = printf "(%s - %s)" (sh e1) (sh e2)
-sh (MulExpr _ e1 e2) = printf "(%s * %s)" (sh e1) (sh e2)
-sh (DivExpr _ e1 e2) = printf "(%s / %s)" (sh e1) (sh e2)
-sh (RemExpr _ e1 e2) = printf "(%s %% %s)" (sh e1) (sh e2)
-sh (ShlExpr _ e1 e2) = printf "(%s << %s)" (sh e1) (sh e2)
-sh (LshrExpr _ e1 e2) = printf "(%s L>> %s)" (sh e1) (sh e2)
-sh (AshrExpr _ e1 e2) = printf "(%s A>> %s)" (sh e1) (sh e2)
-sh (AndExpr _ e1 e2) = printf "(%s & %s)" (sh e1) (sh e2)
-sh (OrExpr _ e1 e2) = printf "(%s | %s)" (sh e1) (sh e2)
-sh (XorExpr _ e1 e2) = printf "(%s ^ %s)" (sh e1) (sh e2)
-sh (TruncExpr t e) = printf "T%d(%s)" (bits t) (sh e)
-sh (ZExtExpr t e) = printf "ZX%d(%s)" (bits t) (sh e)
-sh (SExtExpr t e) = printf "SX%d(%s)" (bits t) (sh e)
-sh (FPTruncExpr _ e) = printf "FPTrunc(%s)" (sh e)
-sh (FPExtExpr _ e) = printf "FPExt(%s)" (sh e)
-sh (FPToSIExpr _ e) = printf "FPToSI(%s)" (sh e)
-sh (FPToUIExpr _ e) = printf "FPToUI(%s)" (sh e)
-sh (SIToFPExpr _ e) = printf "SIToFP(%s)" (sh e)
-sh (UIToFPExpr _ e) = printf "UIToFP(%s)" (sh e)
-sh (PtrToIntExpr _ e) = printf "PtrToInt(%s)" (sh e)
-sh (IntToPtrExpr _ e) = printf "IntToPtr(%s)" (sh e)
-sh (BitcastExpr _ e) = printf "Bitcast(%s)" (sh e)
-sh (LoadExpr _ _ (Just name)) = printf "%%%s" name
-sh (LoadExpr _ addr@AddrEntry{ addrType = GReg } _) = printf "%s" (pretty addr)
-sh (LoadExpr _ addr _) = printf "*%s" (pretty addr)
-sh (ICmpExpr pred e1 e2) = printf "%s %s %s" (sh e1) (pretty pred) (sh e2)
-sh (ILitExpr i) = if i >= 256 then printf "0x%x" i else show i
-sh (FLitExpr f) = show f
-sh (InputExpr _ loc) = printf "(%s)" (show loc)
-sh (StubExpr _ f es) = printf "%s(%s)" f (L.intercalate ", " $ map sh es)
-sh (IntrinsicExpr _ f es) = printf "%s(%s)" (show $ externalFunctionName f)
-    (L.intercalate ", " $ map sh es)
-sh (ExtractExpr _ idx e) = printf "%s[%d]" (sh e) idx
-sh (GEPExpr) = "GEP"
-sh (IrrelevantExpr) = "IRRELEVANT"
+bin :: String -> Expr -> Expr -> Doc
+bin op e1 e2 = parens $ sh e1 <+> text op <+> sh e2
+
+un :: String -> Expr -> Doc
+un func e = text func <> parens (sh e)
+
+sh :: Expr -> Doc
+sh (AddExpr _ e1 e2) = bin "+" e1 e2
+sh (SubExpr _ e1 e2) = bin "-" e1 e2
+sh (MulExpr _ e1 e2) = bin "*" e1 e2
+sh (DivExpr _ e1 e2) = bin "/" e1 e2
+sh (RemExpr _ e1 e2) = bin "%%" e1 e2
+sh (ShlExpr _ e1 e2) = bin "<<" e1 e2
+sh (LshrExpr _ e1 e2) = bin "L>>" e1 e2
+sh (AshrExpr _ e1 e2) = bin "A>>" e1 e2
+sh (AndExpr _ e1 e2) = bin "&" e1 e2
+sh (OrExpr _ e1 e2) = bin "|" e1 e2
+sh (XorExpr _ e1 e2) = bin "^" e1 e2
+sh (TruncExpr t e) = un (printf "T%d" (bits t)) e
+sh (ZExtExpr t e) = un (printf "ZX%d" (bits t)) e
+sh (SExtExpr t e) = un (printf "SX%d" (bits t)) e
+sh (FPTruncExpr _ e) = un "FPTrunc" e
+sh (FPExtExpr _ e) = un "FPExt" e
+sh (FPToSIExpr _ e) = un "FPToSI" e
+sh (FPToUIExpr _ e) = un "FPToUI" e
+sh (SIToFPExpr _ e) = un "SIToFP" e
+sh (UIToFPExpr _ e) = un "UIToFP" e
+sh (PtrToIntExpr _ e) = un "PtrToInt" e
+sh (IntToPtrExpr _ e) = un "IntToPtr" e
+sh (BitcastExpr _ e) = un "Bitcast" e
+sh (LoadExpr _ _ (Just name)) = text "%" <> text name
+sh (LoadExpr _ addr@AddrEntry{ addrType = GReg } _) = text $ pretty addr
+sh (LoadExpr _ addr _) = text "*" <> text (pretty addr)
+sh (ICmpExpr pred e1 e2) = bin (pretty pred) e1 e2
+sh (ILitExpr i) = if i >= 256 then text $ printf "0x%x" i else integer i
+sh (FLitExpr f) = double f
+sh (InputExpr _ loc) = parens $ text $ show loc
+sh (StubExpr _ f es) = text f <> (parens $ hsep $ punctuate (text ",") $ map sh es)
+sh (IntrinsicExpr _ f es) = text (show $ externalFunctionName f) <>
+    (parens $ hsep $ punctuate (text ",") $ map sh es)
+sh (ExtractExpr _ idx e) = sh e <> brackets (int idx)
+sh (GEPExpr) = text "GEP"
+sh (IrrelevantExpr) = text "IRRELEVANT"
 
 data ExprFolders a = ExprFolders {
     iLitFolder :: Integer -> a,

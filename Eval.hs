@@ -37,7 +37,7 @@ noLocInfo = LocInfo{
     locOrigin = Nothing
 }
 
-deriving instance Show Message
+deriving instance (Show a) => Show (Message a)
 
 -- Representation of our [partial] knowledge of machine state.
 type Info = M.Map Loc LocInfo
@@ -49,21 +49,21 @@ data SymbolicState = SymbolicState {
         symbolicVarNameMap :: M.Map (ExprT, AddrEntry) String,
         symbolicCurrentIP :: Maybe Word64,
         symbolicWarnings :: AppList (Maybe Word64, String),
-        symbolicMessages :: AppList (Maybe Word64, Message),
-        symbolicMessagesByIP :: M.Map Word64 (AppList Message),
+        symbolicMessages :: AppList (Maybe Word64, Message Expr),
+        symbolicMessagesByIP :: M.Map Word64 (AppList (Message Expr)),
         symbolicSkipRest :: Bool,
         symbolicRetVal :: Maybe Expr,
         symbolicTotalInstructions :: Int,
         symbolicInstructionsProcessed :: Int
     } deriving (Eq, Ord, Show)
 
-messages :: SymbolicState -> [(Maybe Word64, Message)]
+messages :: SymbolicState -> [(Maybe Word64, Message Expr)]
 messages = unAppList . symbolicMessages
 
 warnings :: SymbolicState -> [(Maybe Word64, String)]
 warnings = unAppList . symbolicWarnings
 
-messagesByIP :: Word64 -> SymbolicState -> [Message]
+messagesByIP :: Word64 -> SymbolicState -> [Message Expr]
 messagesByIP ip SymbolicState{ symbolicMessagesByIP = msgMap }
     = unAppList $ M.findWithDefault mkAppList ip msgMap
 
@@ -145,7 +145,7 @@ inUserCode = do
             | currentIP >= 2 ^ 32 -> False
         _ -> True
 
-message :: Symbolicish m => Message -> m ()
+message :: Symbolicish m => Message Expr -> m ()
 message msg = do
     maybeIP <- getCurrentIP
     modify (\s -> s{ symbolicMessages = symbolicMessages s +: (maybeIP, msg) })
@@ -413,7 +413,7 @@ memInstToExpr (inst@LoadInst{ loadAddress = addrValue },
                         e -> Just e) <|>
                 return Nothing
             when (interestingOp expr addrEntry) $
-                message $ MemoryMessage LoadOp addrEntry (show expr) (show origin)
+                message $ MemoryMessage LoadOp addrEntry expr origin
             return expr
 memInstToExpr (inst@SelectInst{ selectTrueValue = trueVal,
                                    selectFalseValue = falseVal },
@@ -440,7 +440,7 @@ storeUpdate (inst@StoreInst{ storeIsVolatile = False,
                 e -> e) <|>
         return Nothing
     when (interestingOp value addr) $
-        message $ MemoryMessage StoreOp addr (show value) (show origin)
+        message $ MemoryMessage StoreOp addr value origin
     let locInfo = noLocInfo{ locExpr = value, locOrigin = currentIP }
     locInfoInsert (MemLoc addr) locInfo
 -- This will trigger twice with each IP update, but that's okay because the
@@ -489,7 +489,7 @@ controlFlowUpdate (BranchInst{ branchTrueTarget = trueTarget,
                                branchCondition = cond },
                    Just (BranchOp idx)) = void $ optional $ do
     condExpr <- buildExprToMaybeExpr $ valueToExpr cond
-    message $ BranchMessage (show condExpr) (idx == 0)
+    message $ BranchMessage condExpr (idx == 0)
 controlFlowUpdate (SwitchInst{}, _) = return ()
 controlFlowUpdate (inst@CallInst{ callArguments = argVals,
                                   callFunction = FunctionC func },

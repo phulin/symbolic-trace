@@ -3,6 +3,7 @@ module Data.RESET.Message where
 
 import Data.Aeson
 import Data.Aeson.TH
+import Data.Functor
 import Data.LLVM.Types
 import Data.Word
 
@@ -16,19 +17,29 @@ data Command =
 
 data Response =
     ErrorResponse{ responseError :: String } |
-    MessagesResponse{ responseMessages :: [Message] }
+    MessagesResponse{ responseMessages :: [Message String] }
     deriving (Eq, Ord)
 
-data Message =
+-- Parameterized over whether to represent symbolic expressions as Exprs
+-- or as Strings.
+data Message a =
     MemoryMessage{ messageOp :: AddrOp,
-                   messageAddr :: AddrEntry,
-                   messageExpr :: String,
-                   messageOrigin :: String } |
-    BranchMessage{ messageExpr :: String,
+                   messageAddr :: String,
+                   messageExpr :: a,
+                   messageOrigin :: Maybe a } |
+    BranchMessage{ messageExpr :: a,
                    messageTaken :: Bool } |
     UnconditionalBranchMessage |
     WarningMessage{ messageWarning :: String }
     deriving (Eq, Ord)
+
+messageMap :: (a -> b) -> Message a -> Message b
+messageMap f (MemoryMessage op addr expr origin)
+    = MemoryMessage op addr (f expr) (f `fmap` origin)
+messageMap f (BranchMessage expr taken)
+    = BranchMessage (f expr) taken
+messageMap _ UnconditionalBranchMessage = UnconditionalBranchMessage
+messageMap _ (WarningMessage w) = WarningMessage w
 
 $(deriveJSON id ''DW_TAG)
 $(deriveJSON id ''DW_ATE)

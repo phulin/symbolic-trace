@@ -51,7 +51,8 @@ processCmd state s = case parseCmd s of
 
 respond :: Command -> SymbReader Response
 respond WatchIP{ commandIP = ip, commandLimit = limit }
-    = MessagesResponse <$> take limit <$> asks (messagesByIP ip)
+    = MessagesResponse <$> map (messageMap show) <$> take limit <$>
+        asks (messagesByIP ip)
 
 process :: SymbolicState -> (Handle, HostName, PortNumber) -> IO ()
 process state (handle, _, _) = do

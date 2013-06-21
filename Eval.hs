@@ -6,6 +6,7 @@ module Eval(Symbolic(..), SymbolicState(..), noSymbolicState, runBlocks, message
 import Data.LLVM.Types
 import qualified Data.List as L
 import qualified Data.Map as M
+import qualified Data.Map.Strict as MS
 import qualified Data.Set as S
 import qualified Data.Bits as Bits
 import Data.Word
@@ -50,7 +51,7 @@ data SymbolicState = SymbolicState {
         symbolicCurrentIP :: Maybe Word64,
         symbolicWarnings :: AppList (Maybe Word64, String),
         symbolicMessages :: AppList (Maybe Word64, Message Expr),
-        symbolicMessagesByIP :: M.Map Word64 (AppList (Message Expr)),
+        symbolicMessagesByIP :: MS.Map Word64 (AppList (Message Expr)),
         symbolicSkipRest :: Bool,
         symbolicRetVal :: Maybe Expr,
         symbolicTotalInstructions :: Int,
@@ -65,7 +66,7 @@ warnings = unAppList . symbolicWarnings
 
 messagesByIP :: Word64 -> SymbolicState -> [Message Expr]
 messagesByIP ip SymbolicState{ symbolicMessagesByIP = msgMap }
-    = unAppList $ M.findWithDefault mkAppList ip msgMap
+    = unAppList $ MS.findWithDefault mkAppList ip msgMap
 
 -- Symbolic is our fundamental monad: it holds state about control flow and
 -- holds our knowledge of machine state.
@@ -152,7 +153,7 @@ message msg = do
     case maybeIP of
         Just ip -> do
             modify (\s -> s{ 
-                symbolicMessagesByIP = M.alter addMsg ip $ symbolicMessagesByIP s
+                symbolicMessagesByIP = MS.alter addMsg ip $ symbolicMessagesByIP s
             })
         Nothing -> return ()
     where addMsg (Just msgs) = Just $ msgs +: msg

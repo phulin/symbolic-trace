@@ -4,7 +4,7 @@ Synopsis:            Symbolic execution of traces for program understanding
 Description:         Symbolic execution of traces for program understanding
 Author:              Patrick Hulin
 Maintainer:          Patrick Hulin <phulin@mit.edu>
-Build-Depends:       base, mtl, transformers, bytestring, binary >= 0.6.0.0, containers, llvm-data-interop, llvm-base-types, network, aeson, text, reset-types
+Build-Depends:       base, mtl, transformers, bytestring, binary >= 0.6.0.0, containers >= 0.5.0.0, llvm-data-interop, llvm-base-types, network, aeson, text, reset-types
 
 Build-Type:			 Simple
 Executable:          Eval

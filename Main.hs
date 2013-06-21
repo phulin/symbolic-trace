@@ -20,6 +20,7 @@ import Text.Printf
 import qualified Data.ByteString.Lazy.Char8 as BS
 import qualified Data.List as L
 import qualified Data.Map as M
+import qualified Data.Map.Strict as MS
 import qualified Data.Text as T
 
 import Data.RESET.Types

@@ -43,7 +43,7 @@ interesting focus fs = (before, reverse revOurs, reverse revAfter)
 processCmd :: SymbolicState -> String -> IO Response
 processCmd state s = case parseCmd s of
     Left err -> do
-        putStrLn $ printf "Parse error on %s:\n  %s" s err
+        putStrLn $ printf "Parse error on %s:\n  %s" (show s) err
         return $ ErrorResponse err
     Right cmd -> do
         putStrLn $ printf "executing command: %s" (show cmd)
@@ -87,7 +87,7 @@ main = do
     -- Run symbolic execution analysis
     let (result, state) = runState (runProgressT $ runBlocks associated) noSymbolicState{ symbolicTotalInstructions = instructionCount }
     showProgress result
-    unless (null $ warnings state) $ do
+    seq state $ unless (null $ warnings state) $ do
         putStrLn "Warnings:"
         putStrLn $ L.intercalate "\n" $ map showWarning $ warnings state
 
@@ -95,4 +95,4 @@ main = do
     let addr = PortNumber 22022
     sock <- listenOn addr
     putStrLn $ printf "Listening on %s." (show addr)
-    accept sock >>= process state
+    forever $ catchIOError (accept sock >>= process state) $ \e -> print e

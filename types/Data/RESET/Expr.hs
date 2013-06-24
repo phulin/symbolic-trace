@@ -48,6 +48,8 @@ data Expr =
     StubExpr ExprT String [Expr] |
     IntrinsicExpr ExprT ExternalFunction [Expr] |
     ExtractExpr ExprT Int Expr |
+    StructExpr ExprT [Expr] |
+    UndefinedExpr |
     GEPExpr | -- dummy expression for getelementptr instructions
     IrrelevantExpr
     deriving (Eq, Ord)

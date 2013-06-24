@@ -93,6 +93,8 @@ sh (StubExpr _ f es) = text f <> (parens $ hsep $ punctuate (text ",") $ map sh 
 sh (IntrinsicExpr _ f es) = text (show $ externalFunctionName f) <>
     (parens $ hsep $ punctuate (text ",") $ map sh es)
 sh (ExtractExpr _ idx e) = sh e <> brackets (int idx)
+sh (StructExpr _ es) = braces $ parens $ hsep $ punctuate (text ",") $ map sh es
+sh (UndefinedExpr) = text "Undef"
 sh (GEPExpr) = text "GEP"
 sh (IrrelevantExpr) = text "IRRELEVANT"
 
@@ -303,7 +305,9 @@ simplify (ExtractExpr _ 1 (IntrinsicExpr (StructT [_, t])
             _ -> ILitExpr 1
 simplify (StubExpr t f es) = StubExpr t f $ map simplify es
 simplify (IntrinsicExpr t f es) = IntrinsicExpr t f $ map simplify es
+simplify (ExtractExpr _ idx (StructExpr _ es)) = simplify $ es !! idx
 simplify (ExtractExpr t idx e) = ExtractExpr t idx (simplify e)
+simplify (StructExpr t es) = StructExpr t $ map simplify es
 simplify e = e
 
 -- Simple type system

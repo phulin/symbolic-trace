@@ -272,6 +272,7 @@ identifierToExpr name = do
         e -> return e
 
 valueToExpr :: Value -> BuildExpr Expr
+valueToExpr (ConstantC UndefValue{}) = return UndefinedExpr
 valueToExpr (ConstantC (ConstantFP _ _ value)) = return $ FLitExpr value 
 valueToExpr (ConstantC (ConstantInt _ _ value)) = return $ ILitExpr value
 valueToExpr (ConstantC (ConstantValue{ constantInstruction = inst }))
@@ -364,6 +365,10 @@ typeBytes (TypeArray count t) = fromIntegral count * typeBytes t
 typeBytes (TypeStruct _ ts _) = sum $ map typeBytes ts
 typeBytes t = error $ printf "Unsupported type %s" (show t)
 
+modifyAt :: Int -> a -> [a] -> [a]
+modifyAt 0 v (_ : xs) = v : xs
+modifyAt n v (x : xs) = x : modifyAt (n - 1) v xs
+
 otherInstToExpr :: Instruction -> BuildExpr Expr
 otherInstToExpr PhiNode{ phiIncomingValues = valList } = do
     maybePrevBlock <- getPreviousBlock
@@ -375,6 +380,19 @@ otherInstToExpr inst@CallInst{ callFunction = ExternalFunctionC func,
     | externalIsIntrinsic func = do
         args <- mapM valueToExpr $ map fst argValuePairs
         return $ IntrinsicExpr (exprTOfInst inst) func args
+otherInstToExpr inst@InsertValueInst{ insertValueAggregate = aggr,
+                                      insertValueValue = val,
+                                      insertValueIndices = [idx] } = do
+    aggrExpr <- valueToExpr aggr
+    insertExpr <- valueToExpr val
+    let typ = exprTOfInst inst
+    case aggrExpr of
+        UndefinedExpr -> case typ of
+            StructT ts -> return $ StructExpr typ $ modifyAt idx insertExpr $
+                replicate (length ts) UndefinedExpr
+            _ -> warning "Bad result type!" >> fail ""
+        StructExpr t es -> return $ StructExpr t $ modifyAt idx insertExpr es
+        _ -> warning (printf "Unrecognized expr at inst '%s'" (show inst)) >> fail ""
 otherInstToExpr inst@ExtractValueInst{ extractValueAggregate = aggr,
                                          extractValueIndices = [idx] } = do
     aggrExpr <- valueToExpr aggr

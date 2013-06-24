@@ -85,7 +85,7 @@ main = do
     funcNameList <- lines <$> readFile "/tmp/llvm-functions.log"
     let findFunc name = fromMaybe (error $ "Couldn't find function " ++ name) $ findFunctionByName theMod name
     let funcList = map findFunc funcNameList
-    let interestingFuncs = interesting "sub_" funcList
+    let interestingFuncs = interesting "main" funcList
 
     -- Align dynamic log with execution history
     putStrLn "Loading dynamic log."

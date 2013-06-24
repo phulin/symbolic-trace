@@ -23,6 +23,7 @@ import Data.RESET.Types
 import AppList
 import Expr
 import Memlog
+import Options
 import Pretty
 import Progress
 
@@ -55,8 +56,9 @@ data SymbolicState = SymbolicState {
         symbolicSkipRest :: Bool,
         symbolicRetVal :: Maybe Expr,
         symbolicTotalInstructions :: Int,
-        symbolicInstructionsProcessed :: Int
-    } deriving (Eq, Ord, Show)
+        symbolicInstructionsProcessed :: Int,
+        symbolicOptions :: Options
+    } deriving Show
 
 messages :: SymbolicState -> [(Maybe Word64, Message Expr)]
 messages = unAppList . symbolicMessages
@@ -190,7 +192,8 @@ noSymbolicState = SymbolicState{
     symbolicSkipRest = False,
     symbolicRetVal = Nothing,
     symbolicTotalInstructions = error "Need total instr count.",
-    symbolicInstructionsProcessed = 0
+    symbolicInstructionsProcessed = 0,
+    symbolicOptions = defaultOptions
 }
 
 valueAt :: Symbolicish m => Loc -> m Expr

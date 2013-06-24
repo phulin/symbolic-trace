@@ -13,6 +13,8 @@ import Data.Maybe
 import Data.Word
 import Debug.Trace
 import Network
+import System.Environment(getArgs)
+import System.Console.GetOpt
 import System.IO
 import System.IO.Error
 import Text.Printf
@@ -26,6 +28,7 @@ import qualified Data.Text as T
 import Data.RESET.Types
 import Eval
 import Memlog
+import Options
 import Progress
 
 deriving instance Show Command
@@ -61,9 +64,19 @@ process state (handle, _, _) = do
     commands <- lines <$> hGetContents handle
     mapM_ (BS.hPutStrLn handle <=< liftM encode . processCmd state) commands
 
+-- Command line arguments
+opts :: [OptDescr (Options -> Options)]
+opts =
+    [ Option ['d'] ["debug"] (NoArg $ \o -> o{ optDebug = True })
+        "Run in debug mode. Warning: VERY VERBOSE."
+    ]
+
 main :: IO ()
 main = do
     hSetBuffering stdout NoBuffering
+    args <- getArgs
+    let (optionFs, _, _) = getOpt Permute opts args
+    let options = foldl (flip ($)) defaultOptions optionFs
 
     -- Load LLVM files and dynamic logs
     putStrLn "Loading LLVM module from /tmp/llvm-mod.bc."
@@ -85,7 +98,11 @@ main = do
             instructionCount
 
     -- Run symbolic execution analysis
-    let (result, state) = runState (runProgressT $ runBlocks associated) noSymbolicState{ symbolicTotalInstructions = instructionCount }
+    let initialState = noSymbolicState{
+        symbolicTotalInstructions = instructionCount,
+        symbolicOptions = options
+    }
+    let (result, state) = runState (runProgressT $ runBlocks associated) initialState
     showProgress result
     seq state $ unless (null $ warnings state) $ do
         putStrLn "Warnings:"

@@ -1,4 +1,4 @@
-module Expr(simplify, exprTOfInst, typeToExprT, ExprFolders(..), constFolders, foldExpr, idLoc) where
+module Expr(simplify, exprTOfInst, typeToExprT, idLoc) where
 
 import Debug.Trace
 
@@ -97,60 +97,6 @@ sh (StructExpr _ es) = braces $ parens $ hsep $ punctuate (text ",") $ map sh es
 sh (UndefinedExpr) = text "Undef"
 sh (GEPExpr) = text "GEP"
 sh (IrrelevantExpr) = text "IRRELEVANT"
-
-data ExprFolders a = ExprFolders {
-    iLitFolder :: Integer -> a,
-    fLitFolder :: Double -> a,
-    inputFolder :: ExprT -> Loc -> a,
-    loadFolder :: ExprT -> AddrEntry -> Maybe String -> a,
-    irrelevantFolder :: a,
-    binaryCombiner :: a -> a -> a
-}
-
-constFolders :: a -> ExprFolders a
-constFolders x = ExprFolders {
-    iLitFolder = const x,
-    fLitFolder = const x,
-    inputFolder = const $ const x,
-    loadFolder = const $ const $ const x,
-    irrelevantFolder = x,
-    binaryCombiner = const $ const x
-}
-
-foldExpr :: ExprFolders a -> Expr -> a
-foldExpr fs (AddExpr t e1 e2) = binaryCombiner fs (foldExpr fs e1) (foldExpr fs e2)
-foldExpr fs (SubExpr t e1 e2) = binaryCombiner fs (foldExpr fs e1) (foldExpr fs e2)
-foldExpr fs (MulExpr t e1 e2) = binaryCombiner fs (foldExpr fs e1) (foldExpr fs e2)
-foldExpr fs (DivExpr t e1 e2) = binaryCombiner fs (foldExpr fs e1) (foldExpr fs e2)
-foldExpr fs (RemExpr t e1 e2) = binaryCombiner fs (foldExpr fs e1) (foldExpr fs e2)
-foldExpr fs (ShlExpr t e1 e2) = binaryCombiner fs (foldExpr fs e1) (foldExpr fs e2)
-foldExpr fs (LshrExpr t e1 e2) = binaryCombiner fs (foldExpr fs e1) (foldExpr fs e2)
-foldExpr fs (AshrExpr t e1 e2) = binaryCombiner fs (foldExpr fs e1) (foldExpr fs e2)
-foldExpr fs (AndExpr t e1 e2) = binaryCombiner fs (foldExpr fs e1) (foldExpr fs e2)
-foldExpr fs (OrExpr t e1 e2) = binaryCombiner fs (foldExpr fs e1) (foldExpr fs e2)
-foldExpr fs (XorExpr t e1 e2) = binaryCombiner fs (foldExpr fs e1) (foldExpr fs e2)
-foldExpr fs (TruncExpr t e) = foldExpr fs e
-foldExpr fs (ZExtExpr t e) = foldExpr fs e
-foldExpr fs (SExtExpr t e) = foldExpr fs e
-foldExpr fs (FPTruncExpr t e) = foldExpr fs e
-foldExpr fs (FPExtExpr t e) = foldExpr fs e
-foldExpr fs (FPToSIExpr t e) = foldExpr fs e
-foldExpr fs (FPToUIExpr t e) = foldExpr fs e
-foldExpr fs (SIToFPExpr t e) = foldExpr fs e
-foldExpr fs (UIToFPExpr t e) = foldExpr fs e
-foldExpr fs (PtrToIntExpr t e) = foldExpr fs e
-foldExpr fs (IntToPtrExpr t e) = foldExpr fs e
-foldExpr fs (BitcastExpr t e) = foldExpr fs e
-foldExpr fs (LoadExpr t addr name) = loadFolder fs t addr name
-foldExpr fs (ICmpExpr pred e1 e2) = binaryCombiner fs (foldExpr fs e1) (foldExpr fs e2)
-foldExpr fs (ILitExpr i) = iLitFolder fs i
-foldExpr fs (FLitExpr f) = fLitFolder fs f
-foldExpr fs (InputExpr t loc) = inputFolder fs t loc
-foldExpr fs (StubExpr _ _ args) = foldl1 (binaryCombiner fs) (map (foldExpr fs) args)
-foldExpr fs (IntrinsicExpr _ _ args) = foldl1 (binaryCombiner fs) (map (foldExpr fs) args)
-foldExpr fs (ExtractExpr _ _ e) = foldExpr fs e
-foldExpr fs (GEPExpr) = irrelevantFolder fs
-foldExpr fs (IrrelevantExpr) = irrelevantFolder fs
 
 bits :: ExprT -> Int
 bits Int1T = 1

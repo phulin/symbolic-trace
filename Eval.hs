@@ -584,15 +584,6 @@ runBlocks blocks = do
     retVals <- mapM runBlock blocks
     return $ last retVals
 
-usesEsp :: Expr -> Bool
-usesEsp = foldExpr folders
-    where falseFolders = constFolders False
-          isLoadEsp _ addr _ = pretty addr == "ESP"
-          folders = falseFolders{
-              loadFolder = isLoadEsp,
-              binaryCombiner = (||)
-          }
-
 showInfo :: Info -> String
 showInfo = unlines . map showEach . filter doShow . M.toList
     where showEach (key, val) = printf "%s %s-> %s" (pretty key) origin (show (locExpr val))
@@ -604,4 +595,4 @@ showInfo = unlines . map showEach . filter doShow . M.toList
           doShowExpr ILitExpr{} = False
           doShowExpr LoadExpr{} = False
           doShowExpr InputExpr{} = True
-          doShowExpr expr = not $ usesEsp expr
+          doShowExpr expr = True

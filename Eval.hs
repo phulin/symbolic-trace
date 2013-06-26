@@ -1,4 +1,4 @@
-{-# LANGUAGE FlexibleInstances, FlexibleContexts, UndecidableInstances, GeneralizedNewtypeDeriving, MultiParamTypeClasses, StandaloneDeriving #-}
+{-# LANGUAGE FlexibleInstances, FlexibleContexts, UndecidableInstances, MultiParamTypeClasses, StandaloneDeriving #-}
 -- Symbolic evaluator for basic blocks
 
 module Eval(Symbolic(..), SymbolicState(..), noSymbolicState, runBlocks, messages, messagesByIP, warnings, showWarning, numInstructions) where
@@ -72,11 +72,7 @@ messagesByIP ip SymbolicState{ symbolicMessagesByIP = msgMap }
 
 -- Symbolic is our fundamental monad: it holds state about control flow and
 -- holds our knowledge of machine state.
-type Symbolic = ProgressT (State SymbolicState)
---newtype Symbolic a = Symbolic{ unSymbolic :: ProgressT (State SymbolicState a) }
-    --deriving (Functor, Applicative, Monad, MonadState SymbolicState)
-instance MonadState SymbolicState Symbolic where
-    state = lift . state
+type Symbolic = State SymbolicState
 
 class (MonadState SymbolicState m, Functor m) => Symbolicish m where { }
 instance (MonadState SymbolicState m, Functor m) => Symbolicish m
@@ -103,14 +99,6 @@ putCurrentFunction f = modify (\s -> s{ symbolicFunction = f })
 putCurrentIP :: Symbolicish m => Maybe Word64 -> m ()
 putCurrentIP newIP = modify (\s -> s{ symbolicCurrentIP = newIP })
 putRetVal retVal = modify (\s -> s{ symbolicRetVal = retVal })
-
-countInst :: Symbolic ()
-countInst = do
-    insts <- symbolicInstructionsProcessed <$> get
-    total <- symbolicTotalInstructions <$> get
-    when (insts `rem` 1000 == 0) $ 
-        progress $ fromIntegral insts / fromIntegral total
-    modify (\s -> s{ symbolicInstructionsProcessed = insts + 1 })
 
 skipRest :: Symbolicish m => m ()
 skipRest = modify (\s -> s{ symbolicSkipRest = True })
@@ -251,8 +239,11 @@ instance MonadState SymbolicState (BuildExprT Symbolic) where
     state = lift . state
 
 -- Some conversion functions between different monads
-buildExprToMaybeExpr :: (Functor m, Monad m) => BuildExprT m Expr -> MaybeT m Expr
-buildExprToMaybeExpr = MaybeT . fmap buildExprMToMaybeExpr . runBuildExprT
+buildExprToMaybeExpr :: (Monad m) => BuildExprT m Expr -> MaybeT m Expr
+buildExprToMaybeExpr = MaybeT . liftM buildExprMToMaybeExpr . runBuildExprT
+
+buildExprToMaybeTExpr :: (Monad m, MonadTrans t) => BuildExprT m Expr -> MaybeT (t m) Expr
+buildExprToMaybeTExpr = MaybeT . lift . liftM buildExprMToMaybeExpr . runBuildExprT
 
 buildExprMToMaybeExpr :: BuildExprM Expr -> Maybe Expr
 buildExprMToMaybeExpr (JustI e) = Just e
@@ -513,28 +504,6 @@ controlFlowUpdate (BranchInst{ branchTrueTarget = trueTarget,
     condExpr <- buildExprToMaybeExpr $ valueToExpr cond
     message $ BranchMessage condExpr (idx == 0)
 controlFlowUpdate (SwitchInst{}, _) = return ()
-controlFlowUpdate (inst@CallInst{ callArguments = argVals,
-                                  callFunction = FunctionC func },
-                   Just (HelperFuncOp memlog)) = do
-    -- Call stack abstraction; store current function so we can restore it later
-    currentFunc <- getCurrentFunction
-    -- Pass arguments through
-    argExprs <- mapM (buildExprToMaybeExpr . valueToExpr . fst) argVals
-    let argNames = map argumentName $ functionParameters func
-    let locs = map (idLoc func) argNames
-    let argLocInfos = [ noLocInfo{ locExpr = e } | e <- argExprs ]
-    zipWithM locInfoInsert locs argLocInfos 
-    -- Run and grab return value
-    maybeRetVal <- lift $ runBlocks memlog
-    -- Understand return value
-    optional $ do
-        val <- maybeToM $ maybeRetVal
-        id <- maybeToM $ instructionName inst
-        currentIP <- getCurrentIP
-        let locInfo = noLocInfo{ locExpr = val, locOrigin = currentIP }
-        locInfoInsert (idLoc currentFunc id) locInfo
-    -- Restore old function
-    putCurrentFunction currentFunc
 controlFlowUpdate (CallInst{ callFunction = ExternalFunctionC func,
                              callAttrs = attrs }, _)
     | FANoReturn `elem` externalFunctionAttrs func = skipRest
@@ -551,13 +520,61 @@ infoUpdaters = [ ignoreUpdate,
                  controlFlowUpdate,
                  failedUpdate ]
 
-updateInfo :: (Instruction, Maybe MemlogOp) -> Symbolic ()
+traceInstOp :: (Instruction, Maybe MemlogOp) -> a -> a
+traceInstOp (inst, Just (HelperFuncOp _))
+    = trace $ printf "%s\n=============\nHELPER FUNCTION:" (show inst)
+traceInstOp (inst, Just op) = trace $ printf "%s\n\t\t%s" (show inst) (show op)
+traceInstOp (inst, Nothing) = traceShow inst
+
+type ProgressSymb = ProgressT Symbolic
+instance MonadState SymbolicState ProgressSymb where
+    state = lift . state
+
+helperFuncUpdate :: (Instruction, Maybe MemlogOp) -> MaybeT ProgressSymb ()
+helperFuncUpdate (inst@CallInst{ callArguments = argVals,
+                                 callFunction = FunctionC func },
+                  Just (HelperFuncOp memlog)) = do
+    -- Call stack abstraction; store current function so we can restore it later
+    currentFunc <- getCurrentFunction
+    -- Pass arguments through
+    argExprs <- mapM (buildExprToMaybeTExpr . valueToExpr . fst) argVals
+    let argNames = map argumentName $ functionParameters func
+    let locs = map (idLoc func) argNames
+    let argLocInfos = [ noLocInfo{ locExpr = e } | e <- argExprs ]
+    zipWithM locInfoInsert locs argLocInfos 
+    -- Run and grab return value
+    maybeRetVal <- lift $ runBlocks memlog
+    -- Understand return value
+    optional $ do
+        val <- maybeToM $ maybeRetVal
+        id <- maybeToM $ instructionName inst
+        currentIP <- getCurrentIP
+        let locInfo = noLocInfo{ locExpr = val, locOrigin = currentIP }
+        locInfoInsert (idLoc currentFunc id) locInfo
+    -- Restore old function
+    putCurrentFunction currentFunc
+helperFuncUpdate _ = fail ""
+
+countInst :: ProgressSymb ()
+countInst = do
+    insts <- symbolicInstructionsProcessed <$> get
+    total <- symbolicTotalInstructions <$> get
+    when (insts `rem` (total `quot` 100) == 0) $ 
+        progress $ fromIntegral insts / fromIntegral total
+    modify (\s -> s{ symbolicInstructionsProcessed = insts + 1 })
+
+updateInfo :: (Instruction, Maybe MemlogOp) -> ProgressSymb ()
 updateInfo instOp@(inst, _) = do
+    currentIP <- getCurrentIP
+    -- when (currentIP == Just 134516607) $ traceInstOp instOp $ return ()
     countInst
     skip <- getSkipRest
-    unless skip $ void $ runMaybeT $ foldl1 (<||>) infoUpdaters instOp
+    unless skip $ void $ runMaybeT $ helperFuncUpdate instOp <|>
+        (liftP $ foldl1 (<||>) infoUpdaters instOp)
+    where liftP :: MaybeSymb a -> MaybeT ProgressSymb a
+          liftP msx = MaybeT $ ProgressT $ ProgressLift <$> runMaybeT msx
 
-runBlock :: (BasicBlock, InstOpList) -> Symbolic (Maybe Expr)
+runBlock :: (BasicBlock, InstOpList) -> ProgressSymb (Maybe Expr)
 runBlock (block, instOpList) = do
     putCurrentFunction $ basicBlockFunction block 
     putRetVal Nothing
@@ -579,7 +596,7 @@ numBlockInstructions ((_, Just (HelperFuncOp memlog)) : xs)
 numBlockInstructions (x : xs) = 1 + numBlockInstructions xs
 numBlockInstructions [] = 0
 
-runBlocks :: MemlogList -> Symbolic (Maybe Expr)
+runBlocks :: MemlogList -> ProgressSymb (Maybe Expr)
 runBlocks blocks = do
     retVals <- mapM runBlock blocks
     return $ last retVals

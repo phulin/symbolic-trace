@@ -1,5 +1,5 @@
 -- Monad transformer for progress tracking.
-module Progress(Progress, ProgressT(..), progress, showProgress) where
+module Progress(Progress(..), ProgressT(..), progress, showProgress) where
 
 import Control.Applicative
 import Control.Monad
@@ -13,7 +13,7 @@ instance Functor Progress where
     f `fmap` ProgressLift x = ProgressLift $ f x
 
 showProgress :: Progress a -> IO a
-showProgress (Progress p px) = printf "\r%.2f%%" (100 * p) >> showProgress px
+showProgress (Progress p px) = printf "\r%.0f%%" (100 * p) >> showProgress px
 showProgress (ProgressLift x) = putStrLn "\rDone.       " >> return x
 
 newtype ProgressT m a = ProgressT { runProgressT :: m (Progress a) }

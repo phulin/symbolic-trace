@@ -50,7 +50,7 @@ instance Pretty CmpPredicate where
     pretty p = "?" ++ (show p) ++ "?"
 
 instance Show Expr where
-    show = renderStyle style{ mode = OneLineMode } . sh . simplify
+    show = renderStyle style{ mode = OneLineMode } . sh . repeatf 50 simplify
 
 bin :: String -> Expr -> Expr -> Doc
 bin op e1 e2 = parens $ sh e1 <+> text op <+> sh e2
@@ -105,6 +105,13 @@ bits Int16T = 16
 bits Int32T = 32
 bits Int64T = 64
 bits t = trace ("Unexpected argument to bits: " ++ show t) 64
+
+repeatf :: (Eq a) => Int -> (a -> a) -> a -> a
+repeatf 0 f x = trace "repeatf overflow. bailing." x
+repeatf lim f x
+    | fx == x = x
+    | otherwise = repeatf (lim - 1) f fx
+    where fx = f x
 
 simplify :: Expr -> Expr
 simplify (AddExpr t e1 (ILitExpr 0)) = simplify e1
@@ -210,6 +217,7 @@ simplify (TruncExpr t1 (SExtExpr t2 e))
 simplify expr@(TruncExpr t e@(ILitExpr int))
     | int < 2 ^ bits t = e
     | otherwise = expr
+simplify (TruncExpr t e) = simplify e
 simplify (ZExtExpr t e@ILitExpr{}) = e
 simplify (ZExtExpr t1 (TruncExpr t2 e))
     | t1 == t2 = simplify $ TruncExpr t2 e

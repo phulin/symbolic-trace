@@ -1,10 +1,12 @@
 module Options(Options(..), defaultOptions) where
 
+import Data.Word(Word64)
+
 data Options = Options
-    { optDebug :: Bool
+    { optDebugIP :: Maybe Word64
     } deriving Show
 
 defaultOptions :: Options
 defaultOptions = Options
-    { optDebug = False
+    { optDebugIP = Nothing
     }

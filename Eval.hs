@@ -100,6 +100,18 @@ putCurrentIP :: Symbolicish m => Maybe Word64 -> m ()
 putCurrentIP newIP = modify (\s -> s{ symbolicCurrentIP = newIP })
 putRetVal retVal = modify (\s -> s{ symbolicRetVal = retVal })
 
+getOption :: Symbolicish m => (Options -> a) -> m a
+getOption projection = projection <$> symbolicOptions <$> get
+
+whenDebugIP :: Symbolicish m => m () -> m ()
+whenDebugIP action = do
+    currentIP <- getCurrentIP
+    debugIP <- getOption optDebugIP
+    case (currentIP, debugIP) of
+        (Just ip, Just ip')
+            | ip == ip' -> action
+        _ -> return ()
+
 skipRest :: Symbolicish m => m ()
 skipRest = modify (\s -> s{ symbolicSkipRest = True })
 clearSkipRest :: Symbolicish m => m ()
@@ -138,6 +150,7 @@ inUserCode = do
 
 message :: Symbolicish m => Message Expr -> m ()
 message msg = do
+    whenDebugIP $ trace (printf "\t\tMESSAGE: %s" $ show msg) $ return ()
     maybeIP <- getCurrentIP
     modify (\s -> s{ symbolicMessages = symbolicMessages s +: (maybeIP, msg) })
     case maybeIP of
@@ -555,7 +568,7 @@ countInst = do
 updateInfo :: (Instruction, Maybe MemlogOp) -> ProgressSymb ()
 updateInfo instOp@(inst, _) = do
     currentIP <- getCurrentIP
-    -- traceInstOp instOp $ return ()
+    whenDebugIP $ traceInstOp instOp $ return ()
     countInst
     skip <- getSkipRest
     unless skip $ void $ runMaybeT $ helperFuncUpdate instOp <|>

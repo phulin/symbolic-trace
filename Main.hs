@@ -67,15 +67,16 @@ process state (handle, _, _) = do
 -- Command line arguments
 opts :: [OptDescr (Options -> Options)]
 opts =
-    [ Option ['d'] ["debug"] (NoArg $ \o -> o{ optDebug = True })
-        "Run in debug mode. Warning: VERY VERBOSE."
+    [ Option ['d'] ["debug-ip"]
+        (ReqArg (\a o -> o{ optDebugIP = Just $ read a }) "Need IP")
+        "Run in debug mode on a given IP; write out trace at that IP."
     ]
 
 main :: IO ()
 main = do
     hSetBuffering stdout NoBuffering
     args <- getArgs
-    let (optionFs, _, _) = getOpt Permute opts args
+    let (optionFs, nonOptions, _) = getOpt Permute opts args
     let options = foldl (flip ($)) defaultOptions optionFs
 
     -- Load LLVM files and dynamic logs

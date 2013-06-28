@@ -407,27 +407,22 @@ instToExprs = [ binaryInstToExpr,
                 castInstToExpr,
                 otherInstToExpr ]
 
+deIntToPtr :: Expr -> Expr
+deIntToPtr (IntToPtrExpr _ e) = e
+deIntToPtr e = e
+
 memInstToExpr :: (Instruction, Maybe MemlogOp) -> BuildExpr Expr
 memInstToExpr (inst@LoadInst{ loadAddress = addrValue },
-                Just (AddrMemlogOp LoadOp addrEntry)) = do
+               Just (AddrMemlogOp LoadOp addrEntry)) = do
     info <- getInfo
     let typ = exprTOfInst inst
-    case addrFlag addrEntry of
-        IrrelevantFlag -> return IrrelevantExpr -- Ignore parts of CPU state that Panda doesn't track.
-        _ -> do
-            expr <- (locExpr <$> maybeToM (M.lookup (MemLoc addrEntry) info)) <|>
-                    (LoadExpr typ addrEntry <$> generateName typ addrEntry)
-            stringIP <- getStringIP
-            origin <-
-                (do
-                    addrExpr <- valueToExpr addrValue
-                    return $ case addrExpr of
-                        IntToPtrExpr _ e -> Just e
-                        e -> Just e) <|>
-                return Nothing
-            when (interestingOp expr addrEntry) $
-                message $ MemoryMessage LoadOp (pretty addrEntry) expr origin
-            return expr
+    expr <- (locExpr <$> maybeToM (M.lookup (MemLoc addrEntry) info)) <|>
+            (LoadExpr typ addrEntry <$> generateName typ addrEntry)
+    stringIP <- getStringIP
+    origin <- optional $ deIntToPtr <$> valueToExpr addrValue
+    when (interestingOp expr addrEntry) $
+        message $ MemoryMessage LoadOp (pretty addrEntry) expr origin
+    return expr
 memInstToExpr (inst@SelectInst{ selectTrueValue = trueVal,
                                    selectFalseValue = falseVal },
                   Just (SelectOp selection))
@@ -445,13 +440,7 @@ storeUpdate (inst@StoreInst{ storeIsVolatile = False,
              (Just (AddrMemlogOp StoreOp addr))) = do
     value <- buildExprToMaybeExpr $ valueToExpr val
     currentIP <- getCurrentIP
-    origin <-
-        (do
-            addrExpr <- buildExprToMaybeExpr $ valueToExpr addrValue
-            return $ Just $ case addrExpr of
-                IntToPtrExpr _ e -> e
-                e -> e) <|>
-        return Nothing
+    origin <- optional $ deIntToPtr <$> (buildExprToMaybeExpr $ valueToExpr addrValue)
     when (interestingOp value addr) $
         message $ MemoryMessage StoreOp (pretty addr) value origin
     let locInfo = noLocInfo{ locExpr = value, locOrigin = currentIP }
@@ -566,7 +555,7 @@ countInst = do
 updateInfo :: (Instruction, Maybe MemlogOp) -> ProgressSymb ()
 updateInfo instOp@(inst, _) = do
     currentIP <- getCurrentIP
-    -- when (currentIP == Just 134516607) $ traceInstOp instOp $ return ()
+    -- traceInstOp instOp $ return ()
     countInst
     skip <- getSkipRest
     unless skip $ void $ runMaybeT $ helperFuncUpdate instOp <|>

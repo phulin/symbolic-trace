@@ -81,16 +81,16 @@ main = do
     -- Load LLVM files and dynamic logs
     putStrLn "Loading LLVM module from /tmp/llvm-mod.bc."
     theMod <- parseLLVMFile defaultParserOptions "/tmp/llvm-mod.bc"
-    putStrLn "Parsing execution log."
+    seq theMod $ putStrLn "Parsing execution log."
     funcNameList <- lines <$> readFile "/tmp/llvm-functions.log"
     let findFunc name = fromMaybe (error $ "Couldn't find function " ++ name) $ findFunctionByName theMod name
     let funcList = map findFunc funcNameList
     let interestingFuncs = interesting "main" funcList
 
     -- Align dynamic log with execution history
-    putStrLn "Loading dynamic log."
+    seq interestingFuncs $ putStrLn "Loading dynamic log."
     memlog <- parseMemlog
-    putStr "Aligning dynamic log data..."
+    seq memlog $ putStr "Aligning dynamic log data..."
     let associated = associateFuncs memlog interestingFuncs
     let instructionCount = numInstructions associated
     seq associated $ putStrLn $

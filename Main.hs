@@ -38,7 +38,7 @@ import Progress
 deriving instance Show Command
 deriving instance Show Response
 
-type SymbReader = Reader SymbolicState
+type SymbReader = ReaderT SymbolicState IO
 
 interesting :: String -> [Function] -> Interesting
 interesting focus fs = (before, reverse revOurs, reverse revAfter)
@@ -54,7 +54,7 @@ processCmd state s = case parseCmd s of
         return $ ErrorResponse err
     Right cmd -> do
         putStrLn $ printf "executing command: %s" (show cmd)
-        return $ runReader (respond cmd) state
+        runReaderT (respond cmd) state
     where parseCmd = eitherDecode . BS.pack :: String -> Either String Command
 
 respond :: Command -> SymbReader Response

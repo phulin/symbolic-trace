@@ -528,7 +528,7 @@ traceInstOp (inst, Just (HelperFuncOp _))
 traceInstOp (inst, Just op) = trace $ printf "%s\n\t\t%s" (show inst) (show op)
 traceInstOp (inst, Nothing) = traceShow inst
 
-type ProgressSymb = ProgressT Symbolic
+type ProgressSymb = ProgressT Float Symbolic
 instance MonadState SymbolicState ProgressSymb where
     state = lift . state
 

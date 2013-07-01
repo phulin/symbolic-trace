@@ -6,6 +6,7 @@ import Data.Aeson.TH
 import Data.Functor
 import Data.LLVM.Types
 import Data.Word
+import System.Exit(ExitCode(..))
 
 import Data.RESET.Memlog
 import Data.RESET.Expr
@@ -17,7 +18,8 @@ data Command =
 
 data Response =
     ErrorResponse{ responseError :: String } |
-    MessagesResponse{ responseMessages :: [Message String] }
+    MessagesResponse{ responseMessages :: [Message String] } |
+    ExitCodeResponse{ responseExitCode :: ExitCode }
     deriving (Eq, Ord)
 
 -- Parameterized over whether to represent symbolic expressions as Exprs
@@ -41,6 +43,7 @@ messageMap f (BranchMessage expr taken)
 messageMap _ UnconditionalBranchMessage = UnconditionalBranchMessage
 messageMap _ (WarningMessage w) = WarningMessage w
 
+$(deriveJSON id ''ExitCode)
 $(deriveJSON id ''DW_TAG)
 $(deriveJSON id ''DW_ATE)
 $(deriveJSON id ''DW_VIRTUALITY)

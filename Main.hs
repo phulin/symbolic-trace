@@ -1,4 +1,4 @@
-{-# LANGUAGE StandaloneDeriving #-}
+{-# LANGUAGE StandaloneDeriving, OverloadedStrings #-}
 module Main where
 
 import Data.LLVM.Types
@@ -13,8 +13,12 @@ import Data.Maybe
 import Data.Word
 import Debug.Trace
 import Network
-import System.Environment(getArgs)
 import System.Console.GetOpt
+import System.Cmd(rawSystem)
+import System.Directory(setCurrentDirectory, canonicalizePath)
+import System.Environment(getArgs)
+import System.Exit(ExitCode(..), exitWith)
+import System.FilePath((</>))
 import System.IO
 import System.IO.Error
 import Text.Printf
@@ -70,14 +74,49 @@ opts =
     [ Option ['d'] ["debug-ip"]
         (ReqArg (\a o -> o{ optDebugIP = Just $ read a }) "Need IP")
         "Run in debug mode on a given IP; write out trace at that IP."
+    , Option ['q'] ["qemu-dir"]
+        (ReqArg (\a o -> o{ optQemuDir = Just a }) "Need dir")
+        "Run QEMU on specified program."
+    , Option ['t'] ["qemu-target"]
+        (ReqArg (\a o -> o{ optQemuTarget = a }) "Need triple")
+        "Run specified QEMU target. Default i386-linux-user."
     ]
+
+runQemu :: String -> String -> [String] -> IO ()
+runQemu dir target prog = do
+    arch <- case map T.unpack $ T.splitOn "-" (T.pack target) of
+        [arch, _, _] -> return arch
+        _ -> putStrLn "Bad target triple." >> exitWith (ExitFailure 1)
+    -- Make sure we run prog relative to old working dir.
+    progShifted <- case prog of
+        progName : progArgs -> do
+            progPath <- canonicalizePath progName
+            return $ progPath : progArgs
+        _ -> return $ error "Need a program to run."
+    -- We HAVE to be in the QEMU dir to run successfully; location of helper
+    -- function bitcode requires it.
+    putStrLn $ printf "Switching to directory %s." dir
+    setCurrentDirectory dir
+    let qemu = target </> printf "qemu-%s" arch
+    let plugin = target </> "panda_plugins" </> "panda_llvm_trace.so"
+    let qemuArgs = ["-panda-plugin", plugin] ++ progShifted
+    putStrLn $ printf "Running QEMU at %s with args %s..." qemu (show qemuArgs)
+    exitCode <- rawSystem qemu qemuArgs
+    case exitCode of
+        ExitFailure{} -> putStrLn "QEMU failed; exiting" >> exitWith exitCode
+        ExitSuccess -> putStrLn "Done running QEMU."
 
 main :: IO ()
 main = do
     hSetBuffering stdout NoBuffering
     args <- getArgs
-    let (optionFs, nonOptions, _) = getOpt Permute opts args
+    let (optionFs, nonOptions, _) = getOpt RequireOrder opts args
     let options = foldl (flip ($)) defaultOptions optionFs
+
+    -- Run QEMU if necessary
+    case optQemuDir options of
+        Just dir -> runQemu dir (optQemuTarget options) nonOptions
+        Nothing -> return ()
 
     -- Load LLVM files and dynamic logs
     putStrLn "Loading LLVM module from /tmp/llvm-mod.bc."

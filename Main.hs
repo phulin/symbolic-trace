@@ -103,7 +103,8 @@ runQemu dir target prog = do
     putStrLn $ printf "Running QEMU at %s with args %s..." qemu (show qemuArgs)
     exitCode <- rawSystem qemu qemuArgs
     case exitCode of
-        ExitFailure{} -> putStrLn "QEMU failed; exiting" >> exitWith exitCode
+        ExitFailure code ->
+            putStrLn $ printf "\nQEMU exited with return code %d." code
         ExitSuccess -> putStrLn "Done running QEMU."
 
 main :: IO ()

@@ -1,4 +1,4 @@
-module Expr(simplify, exprTOfInst, typeToExprT, idLoc, ExprOptions(..), renderExpr) where
+module Expr(simplify, exprTOfInst, typeToExprT, idLoc, renderExpr) where
 
 import Debug.Trace
 
@@ -50,10 +50,6 @@ instance Pretty CmpPredicate where
     pretty ICmpUlt = "<u"
     pretty ICmpUle = "<=u"
     pretty p = "?" ++ (show p) ++ "?"
-
-data ExprOptions = ExprOptions{ exprShowCasts :: Bool }
-defaultExprOptions :: ExprOptions
-defaultExprOptions = ExprOptions{ exprShowCasts = True }
 
 renderExpr :: ExprOptions -> Expr -> String
 renderExpr opts e = render $ runReader (sh $ repeatf 50 simplify e) opts

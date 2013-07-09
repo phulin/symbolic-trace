@@ -31,6 +31,7 @@ import qualified Data.Text as T
 
 import Data.RESET.Types
 import Eval
+import Expr
 import Memlog
 import Options
 import Progress
@@ -58,9 +59,11 @@ processCmd state s = case parseCmd s of
     where parseCmd = eitherDecode . BS.pack :: String -> Either String Command
 
 respond :: Command -> SymbReader Response
-respond WatchIP{ commandIP = ip, commandLimit = limit }
-    = MessagesResponse <$> map (messageMap show) <$> take limit <$>
-        asks (messagesByIP ip)
+respond WatchIP{ commandIP = ip,
+                 commandLimit = limit,
+                 commandExprOptions = opts }
+    = MessagesResponse <$> map (messageMap $ renderExpr opts) <$>
+        take limit <$> asks (messagesByIP ip)
 
 process :: SymbolicState -> (Handle, HostName, PortNumber) -> IO ()
 process state (handle, _, _) = do

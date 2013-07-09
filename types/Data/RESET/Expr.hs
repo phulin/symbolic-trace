@@ -53,3 +53,8 @@ data Expr =
     GEPExpr | -- dummy expression for getelementptr instructions
     IrrelevantExpr
     deriving (Eq, Ord)
+
+data ExprOptions = ExprOptions{ exprShowCasts :: Bool }
+    deriving (Eq, Ord, Show)
+defaultExprOptions :: ExprOptions
+defaultExprOptions = ExprOptions{ exprShowCasts = True }

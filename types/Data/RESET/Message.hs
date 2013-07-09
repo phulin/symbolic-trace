@@ -13,7 +13,8 @@ import Data.RESET.Expr
 
 data Command =
     WatchIP{ commandIP :: Word64,
-             commandLimit :: Int }
+             commandLimit :: Int, 
+             commandExprOptions :: ExprOptions }
     deriving (Eq, Ord)
 
 data Response =
@@ -61,6 +62,7 @@ $(deriveJSON id ''AddrEntryType)
 $(deriveJSON id ''Expr)
 $(deriveJSON id ''AddrEntry)
 $(deriveJSON id ''AddrOp)
+$(deriveJSON (drop 4) ''ExprOptions)
 $(deriveJSON (drop 7) ''Message)
 $(deriveJSON (drop 7) ''Command)
 $(deriveJSON (drop 8) ''Response)

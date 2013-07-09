@@ -1,7 +1,9 @@
-module Expr(simplify, exprTOfInst, typeToExprT, idLoc) where
+module Expr(simplify, exprTOfInst, typeToExprT, idLoc, ExprOptions(..), renderExpr) where
 
 import Debug.Trace
 
+import Control.Applicative((<$>))
+import Control.Monad.Reader
 import Data.Bits((.&.), (.|.), xor, shiftL, shiftR)
 import Data.LLVM.Types
 import Data.Word(Word8, Word16, Word32, Word64)
@@ -49,16 +51,51 @@ instance Pretty CmpPredicate where
     pretty ICmpUle = "<=u"
     pretty p = "?" ++ (show p) ++ "?"
 
+data ExprOptions = ExprOptions{ exprShowCasts :: Bool }
+defaultExprOptions :: ExprOptions
+defaultExprOptions = ExprOptions{ exprShowCasts = True }
+
+renderExpr :: ExprOptions -> Expr -> String
+renderExpr opts e = render $ runReader (sh $ repeatf 50 simplify e) opts
+    where render = renderStyle style{ mode = OneLineMode }
+
 instance Show Expr where
-    show = renderStyle style{ mode = OneLineMode } . sh . repeatf 50 simplify
+    show = renderExpr defaultExprOptions
 
-bin :: String -> Expr -> Expr -> Doc
-bin op e1 e2 = parens $ sh e1 <+> text op <+> sh e2
+type ShowExpr = Reader ExprOptions
 
-un :: String -> Expr -> Doc
-un func e = text func <> parens (sh e)
+-- Convenience operators for monadic Docs
+(<<+>>) = liftM2 (<+>)
+(<<>>) = liftM2 (<>)
+a <+>> mb = return a <<+>> mb
+ma <<+> b = ma <<+>> return b
+a <>> mb = return a <<>> mb
+ma <<> b = ma <<>> return b
 
-sh :: Expr -> Doc
+-- Binary operator: expr1 op expr2
+bin :: String -> Expr -> Expr -> ShowExpr Doc
+bin op e1 e2 = parens <$> sh e1 <<+> text op <<+>> sh e2
+
+-- Unary operator: func(expr)
+un :: String -> Expr -> ShowExpr Doc
+un func e = text func <>> (parens <$> sh e)
+
+-- Same as un, but show only if exprShowCasts is true.
+-- Otherwise just show casted expression
+cast :: String -> Expr -> ShowExpr Doc
+cast func e = do
+    showCasts <- asks exprShowCasts
+    if showCasts then un func e else sh e
+
+-- e1, e2, e3, ..., e9
+commas :: [Expr] -> ShowExpr Doc
+commas es = hsep <$> punctuate (text ",") <$> mapM sh es
+
+-- (e1, e2, e3, ..., e9)
+tuple :: [Expr] -> ShowExpr Doc
+tuple es = parens <$> commas es 
+
+sh :: Expr -> ShowExpr Doc
 sh (AddExpr _ e1 e2) = bin "+" e1 e2
 sh (SubExpr _ e1 e2) = bin "-" e1 e2
 sh (MulExpr _ e1 e2) = bin "*" e1 e2
@@ -70,33 +107,33 @@ sh (AshrExpr _ e1 e2) = bin "A>>" e1 e2
 sh (AndExpr _ e1 e2) = bin "&" e1 e2
 sh (OrExpr _ e1 e2) = bin "|" e1 e2
 sh (XorExpr _ e1 e2) = bin "^" e1 e2
-sh (TruncExpr t e) = un (printf "T%d" (bits t)) e
-sh (ZExtExpr t e) = un (printf "ZX%d" (bits t)) e
-sh (SExtExpr t e) = un (printf "SX%d" (bits t)) e
-sh (FPTruncExpr _ e) = un "FPTrunc" e
-sh (FPExtExpr _ e) = un "FPExt" e
-sh (FPToSIExpr _ e) = un "FPToSI" e
-sh (FPToUIExpr _ e) = un "FPToUI" e
-sh (SIToFPExpr _ e) = un "SIToFP" e
-sh (UIToFPExpr _ e) = un "UIToFP" e
-sh (PtrToIntExpr _ e) = un "PtrToInt" e
-sh (IntToPtrExpr _ e) = un "IntToPtr" e
-sh (BitcastExpr _ e) = un "Bitcast" e
-sh (LoadExpr _ _ (Just name)) = text "%" <> text name
-sh (LoadExpr _ addr@AddrEntry{ addrType = GReg } _) = text $ pretty addr
-sh (LoadExpr _ addr _) = text "*" <> text (pretty addr)
+sh (TruncExpr t e) = cast (printf "T%d" (bits t)) e
+sh (ZExtExpr t e) = cast (printf "ZX%d" (bits t)) e
+sh (SExtExpr t e) = cast (printf "SX%d" (bits t)) e
+sh (FPTruncExpr _ e) = cast "FPTrunc" e
+sh (FPExtExpr _ e) = cast "FPExt" e
+sh (FPToSIExpr _ e) = cast "FPToSI" e
+sh (FPToUIExpr _ e) = cast "FPToUI" e
+sh (SIToFPExpr _ e) = cast "SIToFP" e
+sh (UIToFPExpr _ e) = cast "UIToFP" e
+sh (PtrToIntExpr _ e) = cast "PtrToInt" e
+sh (IntToPtrExpr _ e) = cast "IntToPtr" e
+sh (BitcastExpr t e) = un (printf "Bitcast%s" (show t)) e
+sh (LoadExpr _ _ (Just name)) = return $ text "%" <> text name
+sh (LoadExpr _ addr@AddrEntry{ addrType = GReg } _) = return $ text $ pretty addr
+sh (LoadExpr _ addr _) = return $ text "*" <> text (pretty addr)
 sh (ICmpExpr pred e1 e2) = bin (pretty pred) e1 e2
-sh (ILitExpr i) = if i >= 256 then text $ printf "0x%x" i else integer i
-sh (FLitExpr f) = double f
-sh (InputExpr _ loc) = parens $ text $ show loc
-sh (StubExpr _ f es) = text f <> (parens $ hsep $ punctuate (text ",") $ map sh es)
-sh (IntrinsicExpr _ f es) = text (show $ externalFunctionName f) <>
-    (parens $ hsep $ punctuate (text ",") $ map sh es)
-sh (ExtractExpr _ idx e) = sh e <> brackets (int idx)
-sh (StructExpr _ es) = braces $ parens $ hsep $ punctuate (text ",") $ map sh es
-sh (UndefinedExpr) = text "Undef"
-sh (GEPExpr) = text "GEP"
-sh (IrrelevantExpr) = text "IRRELEVANT"
+-- Print in hex if >=256 (probably an address); otherwise print in decimal
+sh (ILitExpr i) = return $ if i >= 256 then text $ printf "0x%x" i else integer i
+sh (FLitExpr f) = return $ text $ printf "%.1ff" f 
+sh (InputExpr _ loc) = return $ parens $ text $ show loc
+sh (StubExpr _ f es) = text f <>> tuple es
+sh (IntrinsicExpr _ f es) = text (show $ externalFunctionName f) <>> tuple es
+sh (ExtractExpr _ idx e) = sh e <<> brackets (int idx)
+sh (StructExpr _ es) = braces <$> commas es
+sh (UndefinedExpr) = return $ text "Undef"
+sh (GEPExpr) = return $ text "GEP"
+sh (IrrelevantExpr) = return $ text "IRRELEVANT"
 
 bits :: ExprT -> Int
 bits Int1T = 1

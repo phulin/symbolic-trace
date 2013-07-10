@@ -277,6 +277,7 @@ simplify (OrExpr t e (ILitExpr 0)) = simplify e
 simplify (OrExpr t (ILitExpr 0) e) = simplify e
 simplify (OrExpr t e1 e2) = OrExpr t (simplify e1) (simplify e2)
 simplify (XorExpr t (ILitExpr a) (ILitExpr b)) = ILitExpr $ (a `xor` b) `rem` (2 ^ bits t)
+simplify (XorExpr t (ILitExpr 0) e) = simplify e
 simplify (XorExpr t e1 e2) = XorExpr t (simplify e1) (simplify e2)
 -- FIXME: HACK!!!!
 --simplify (ZExtExpr _ e) = simplify e

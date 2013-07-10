@@ -4,6 +4,8 @@ import Debug.Trace
 
 import Control.Applicative((<$>))
 import Control.Monad.Reader
+import Control.Monad.State
+import Control.Monad.RWS(RWS, evalRWS)
 import Data.Bits((.&.), (.|.), xor, shiftL, shiftR)
 import Data.LLVM.Types
 import Data.Word(Word8, Word16, Word32, Word64)
@@ -52,13 +54,14 @@ instance Pretty CmpPredicate where
     pretty p = "?" ++ (show p) ++ "?"
 
 renderExpr :: ExprOptions -> Expr -> String
-renderExpr opts e = render $ runReader (sh $ repeatf 50 simplify e) opts
+renderExpr opts e = render $ fst $ evalRWS (sh $ repeatf 50 simplify e) opts 0
     where render = renderStyle style{ mode = OneLineMode }
 
 instance Show Expr where
     show = renderExpr defaultExprOptions
 
-type ShowExpr = Reader ExprOptions
+-- Inside ShowExpr, can read ExprOptions and set precedence.
+type ShowExpr = RWS ExprOptions () Int
 
 -- Convenience operators for monadic Docs
 (<<+>>) = liftM2 (<+>)
@@ -68,13 +71,44 @@ ma <<+> b = ma <<+>> return b
 a <>> mb = return a <<>> mb
 ma <<> b = ma <<>> return b
 
+-- Render an expression inside a different precedence context
+withPrec :: Int -> ShowExpr a -> ShowExpr a
+withPrec prec act = do
+    contextPrec <- get
+    put prec
+    result <- act
+    put contextPrec
+    return result
+
+-- Parenthesize if precedence requires
+-- Type is SE Doc -> SE Doc for syntactical convenience
+parensPrec :: Int -> ShowExpr Doc -> ShowExpr Doc
+parensPrec prec mdoc = do
+    doc <- mdoc
+    contextPrec <- get
+    withPrec prec $ if prec >= contextPrec
+        then mdoc
+        else parens <$> mdoc
+
+-- Make parentheses and reset precedence
+parens0 :: ShowExpr Doc -> ShowExpr Doc
+parens0 = parensPrec 0
+
+-- Associate left, right, always, or never (i.e., where to parenthesize operands)
+data Infix = AssocL | AssocR | AssocA | AssocN
+
 -- Binary operator: expr1 op expr2
-bin :: String -> Expr -> Expr -> ShowExpr Doc
-bin op e1 e2 = parens <$> sh e1 <<+> text op <<+>> sh e2
+bin :: Infix -> Int -> String -> Expr -> Expr -> ShowExpr Doc
+bin inf prec op e1 e2 = parensPrec prec $ shl e1 <<+> text op <<+>> shr e2
+    where (shl, shr) = case inf of
+              AssocL -> (sh, shHighPrec)
+              AssocR -> (shHighPrec, sh)
+              AssocA -> (sh, sh)
+              AssocN -> (shHighPrec, shHighPrec)
 
 -- Unary operator: func(expr)
 un :: String -> Expr -> ShowExpr Doc
-un func e = text func <>> (parens <$> sh e)
+un func e = text func <>> (parens0 $ sh e)
 
 -- Same as un, but show only if exprShowCasts is true.
 -- Otherwise just show casted expression
@@ -84,25 +118,34 @@ cast func e = do
     if showCasts then un func e else sh e
 
 -- e1, e2, e3, ..., e9
+-- We don't want to parenthesize interior expressions, so we use shNoPrec
 commas :: [Expr] -> ShowExpr Doc
-commas es = hsep <$> punctuate (text ",") <$> mapM sh es
+commas es = hsep <$> punctuate (text ",") <$> mapM shNoPrec es
 
 -- (e1, e2, e3, ..., e9)
 tuple :: [Expr] -> ShowExpr Doc
-tuple es = parens <$> commas es 
+tuple es = parens0 $ commas es 
+
+-- Guarantee to not parenthesize the inner expression.
+shNoPrec :: Expr -> ShowExpr Doc
+shNoPrec = withPrec 0 . sh
+
+-- Guarantee to parenthesize inner expression
+shHighPrec :: Expr -> ShowExpr Doc
+shHighPrec = withPrec 10000 . sh
 
 sh :: Expr -> ShowExpr Doc
-sh (AddExpr _ e1 e2) = bin "+" e1 e2
-sh (SubExpr _ e1 e2) = bin "-" e1 e2
-sh (MulExpr _ e1 e2) = bin "*" e1 e2
-sh (DivExpr _ e1 e2) = bin "/" e1 e2
-sh (RemExpr _ e1 e2) = bin "%%" e1 e2
-sh (ShlExpr _ e1 e2) = bin "<<" e1 e2
-sh (LshrExpr _ e1 e2) = bin "L>>" e1 e2
-sh (AshrExpr _ e1 e2) = bin "A>>" e1 e2
-sh (AndExpr _ e1 e2) = bin "&" e1 e2
-sh (OrExpr _ e1 e2) = bin "|" e1 e2
-sh (XorExpr _ e1 e2) = bin "^" e1 e2
+sh (AddExpr _ e1 e2) = bin AssocA 10 "+" e1 e2
+sh (SubExpr _ e1 e2) = bin AssocL 10 "-" e1 e2
+sh (MulExpr _ e1 e2) = bin AssocA 20 "*" e1 e2
+sh (DivExpr _ e1 e2) = bin AssocL 20 "/" e1 e2
+sh (RemExpr _ e1 e2) = bin AssocL 15 "%%" e1 e2
+sh (ShlExpr _ e1 e2) = bin AssocN 40 "<<" e1 e2
+sh (LshrExpr _ e1 e2) = bin AssocN 40 "L>>" e1 e2
+sh (AshrExpr _ e1 e2) = bin AssocN 40 "A>>" e1 e2
+sh (AndExpr _ e1 e2) = bin AssocN 35 "&" e1 e2
+sh (OrExpr _ e1 e2) = bin AssocN 30 "|" e1 e2
+sh (XorExpr _ e1 e2) = bin AssocN 25 "^" e1 e2
 sh (TruncExpr t e) = cast (printf "T%d" (bits t)) e
 sh (ZExtExpr t e) = cast (printf "ZX%d" (bits t)) e
 sh (SExtExpr t e) = cast (printf "SX%d" (bits t)) e
@@ -118,14 +161,14 @@ sh (BitcastExpr t e) = un (printf "Bitcast%s" (show t)) e
 sh (LoadExpr _ _ (Just name)) = return $ text "%" <> text name
 sh (LoadExpr _ addr@AddrEntry{ addrType = GReg } _) = return $ text $ pretty addr
 sh (LoadExpr _ addr _) = return $ text "*" <> text (pretty addr)
-sh (ICmpExpr pred e1 e2) = bin (pretty pred) e1 e2
+sh (ICmpExpr pred e1 e2) = bin AssocL 0 (pretty pred) e1 e2
 -- Print in hex if >=256 (probably an address); otherwise print in decimal
 sh (ILitExpr i) = return $ if i >= 256 then text $ printf "0x%x" i else integer i
 sh (FLitExpr f) = return $ text $ printf "%.1ff" f 
 sh (InputExpr _ loc) = return $ parens $ text $ show loc
 sh (StubExpr _ f es) = text f <>> tuple es
 sh (IntrinsicExpr _ f es) = text (show $ externalFunctionName f) <>> tuple es
-sh (ExtractExpr _ idx e) = sh e <<> brackets (int idx)
+sh (ExtractExpr _ idx e) = shHighPrec e <<> brackets (int idx)
 sh (StructExpr _ es) = braces <$> commas es
 sh (UndefinedExpr) = return $ text "Undef"
 sh (GEPExpr) = return $ text "GEP"

@@ -17,7 +17,7 @@ import System.Console.GetOpt
 import System.Cmd(rawSystem)
 import System.Directory(setCurrentDirectory, canonicalizePath)
 import System.Environment(getArgs)
-import System.Exit(ExitCode(..), exitWith)
+import System.Exit(ExitCode(..), exitFailure)
 import System.FilePath((</>))
 import System.IO
 import System.IO.Error
@@ -89,7 +89,7 @@ runQemu :: String -> String -> [String] -> IO ()
 runQemu dir target prog = do
     arch <- case map T.unpack $ T.splitOn "-" (T.pack target) of
         [arch, _, _] -> return arch
-        _ -> putStrLn "Bad target triple." >> exitWith (ExitFailure 1)
+        _ -> putStrLn "Bad target triple." >> exitFailure
     -- Make sure we run prog relative to old working dir.
     progShifted <- case prog of
         progName : progArgs -> do
@@ -114,7 +114,10 @@ main :: IO ()
 main = do
     hSetBuffering stdout NoBuffering
     args <- getArgs
-    let (optionFs, nonOptions, _) = getOpt RequireOrder opts args
+    let (optionFs, nonOptions, optionErrs) = getOpt RequireOrder opts args
+    case optionErrs of
+        [] -> return ()
+        _ -> mapM putStrLn optionErrs >> exitFailure
     let options = foldl (flip ($)) defaultOptions optionFs
 
     -- Run QEMU if necessary

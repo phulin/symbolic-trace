@@ -12,6 +12,7 @@ import Data.Word(Word32, Word64)
 import Text.Printf(printf)
 import Debug.Trace
 
+import qualified Codec.Compression.GZip as GZ
 import qualified Data.ByteString.Lazy as B
 import qualified Data.List as L
 import qualified Data.Map as M
@@ -47,7 +48,7 @@ instance Pretty AddrEntry where
     pretty addr = show addr
 
 parseMemlog :: IO [MemlogOp]
-parseMemlog = runGet (many getMemlogEntry) <$> B.readFile "/tmp/llvm-memlog.log"
+parseMemlog = runGet (many getMemlogEntry) <$> GZ.decompress <$> B.readFile "/tmp/llvm-memlog.log"
 
 getMemlogEntry :: Get MemlogOp
 getMemlogEntry = do

@@ -102,18 +102,17 @@ type OpContext = State [MemlogOp]
 type MemlogContext = StateT (Maybe MemlogAppList) OpContext
 -- Inside a basic block, watch out to see if we run into a control-flow instruction.
 type FuncOpContext = ErrorT String (StateT (Maybe BasicBlock) OpContext)
-memlogPop :: FuncOpContext (Maybe MemlogOp)
-memlogPop = do
+memlogPopMaybe :: FuncOpContext (Maybe MemlogOp)
+memlogPopMaybe = do
     stream <- lift $ lift get
     case stream of
         op : ops -> lift (lift (put ops)) >> return (Just op)
         [] -> return Nothing
 
-memlogPopWithError :: String -> FuncOpContext MemlogOp
-memlogPopWithError errMsg = fromMaybe (error errMsg) <$> memlogPop
-
-memlogPopWithErrorInst :: Instruction -> FuncOpContext MemlogOp
-memlogPopWithErrorInst inst = memlogPopWithError $ "Failed on block " ++ (show $ instructionBasicBlock inst)
+memlogPopErr :: Instruction -> FuncOpContext MemlogOp
+memlogPopErr inst = fromMaybe err <$> memlogPopMaybe
+    where err = error $ printf "Failed on block %s"
+              (show $ instructionBasicBlock inst)
 
 t x = traceShow x x
 
@@ -154,18 +153,18 @@ associateInst :: Instruction -> FuncOpContext (Maybe MemlogOp)
 associateInst inst
     | shouldIgnoreInst inst = return Nothing
 associateInst inst@LoadInst{} = do
-    op <- memlogPopWithErrorInst inst
+    op <- memlogPopErr inst
     case op of
         AddrMemlogOp LoadOp _ -> return $ Just op
         _ -> throwError $ printf "Expected LoadOp; got $s" (show op)
 associateInst inst@StoreInst{ storeIsVolatile = False } = do
-    op <- memlogPopWithErrorInst inst
+    op <- memlogPopErr inst
     case op of
         AddrMemlogOp StoreOp _ -> return $ Just op
         _ -> throwError $ printf "Expected StoreOp; got $s" (show op)
-associateInst inst@SelectInst{} = liftM Just $ memlogPopWithErrorInst inst
+associateInst inst@SelectInst{} = liftM Just $ memlogPopErr inst
 associateInst inst@BranchInst{} = do
-    op <- memlogPopWithErrorInst inst
+    op <- memlogPopErr inst
     case op of
         BranchOp 0 -> put $ Just $ branchTrueTarget inst
         BranchOp 1 -> put $ Just $ branchFalseTarget inst
@@ -173,14 +172,12 @@ associateInst inst@BranchInst{} = do
     return $ Just op
 associateInst inst@SwitchInst{ switchDefaultTarget = defaultTarget,
                                switchCases = casesList } = do
-    op <- memlogPopWithErrorInst inst
+    op <- memlogPopErr inst
     case op of
         SwitchOp idx -> put $ Just $ findSwitchTarget defaultTarget idx casesList
-        _ ->  throwError "Expected switch operation"
+        _ -> throwError "Expected switch operation"
     return $ Just op
-associateInst inst@UnconditionalBranchInst{ unconditionalBranchTarget = target } = do
-    put $ Just target
-    liftM Just $ memlogPopWithErrorInst inst
+associateInst inst@UnconditionalBranchInst{ unconditionalBranchTarget = target } = put (Just target) >> liftM Just (memlogPopErr inst)
 associateInst CallInst{ callFunction = FunctionC func } = do
     lift $ lift $ do -- inside OpContext
         maybeRevMemlog <- execStateT (associateMemlogWithFunc func) $ Just mkAppList

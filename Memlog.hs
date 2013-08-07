@@ -80,12 +80,12 @@ getAddrFlag :: Get AddrFlag
 getAddrFlag = do
     addrFlagType <- getWord32host
     return $ case addrFlagType of
-        -1 -> IrrelevantFlag
+        5 -> IrrelevantFlag
         0 -> NoFlag
         1 -> ExceptionFlag
         2 -> ReadlogFlag
         3 -> FuncargFlag
-        f -> error ("Parse error on flag " ++ show f)
+        f -> error ("Parse error in dynamic log: Unexpected flag " ++ show f)
 
 type InstOpList = [(Instruction, Maybe MemlogOp)]
 type MemlogList = [(BasicBlock, InstOpList)]

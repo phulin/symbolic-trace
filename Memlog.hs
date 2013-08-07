@@ -2,8 +2,9 @@ module Memlog(MemlogOp(..), AddrOp(..), AddrEntry(..), AddrEntryType(..), AddrFl
 
 import Control.Applicative
 import Control.Monad(liftM)
-import Control.Monad.Trans.State
-import Control.Monad.Trans.Class(lift)
+import Control.Monad.Error
+import Control.Monad.State
+import Control.Monad.Trans(lift)
 import Control.Monad.Trans.Maybe
 import Data.Binary.Get(Get, runGet, getWord32host, getWord64host, skip)
 import Data.LLVM.Types
@@ -100,12 +101,12 @@ type OpContext = State [MemlogOp]
 -- The list is kept reversed for efficiency reasons.
 type MemlogContext = StateT (Maybe MemlogAppList) OpContext
 -- Inside a basic block, watch out to see if we run into a control-flow instruction.
-type FuncOpContext = StateT (Maybe BasicBlock) OpContext
+type FuncOpContext = ErrorT String (StateT (Maybe BasicBlock) OpContext)
 memlogPop :: FuncOpContext (Maybe MemlogOp)
 memlogPop = do
-    stream <- lift get
+    stream <- lift $ lift get
     case stream of
-        op : ops -> lift (put ops) >> return (Just op)
+        op : ops -> lift (lift (put ops)) >> return (Just op)
         [] -> return Nothing
 
 memlogPopWithError :: String -> FuncOpContext MemlogOp
@@ -123,8 +124,15 @@ t x = traceShow x x
 associateBasicBlock :: BasicBlock -> FuncOpContext InstOpList
 associateBasicBlock block = mapM associateInstWithCopy $ basicBlockInstructions block
     where associateInstWithCopy inst = do
-              maybeOp <- associateInst inst
+              maybeOp <- associateInst inst `catchError` handler
               return (inst, maybeOp)
+          handler err = do
+              ops <- lift $ lift get
+              throwError $ printf
+                  "Error in basic block: %s\nNext ops: %s\n%s: %s"
+                  err (show $ take 5 ops)
+                  (show $ functionName $ basicBlockFunction block)
+                  (show block)
 
 shouldIgnoreInst :: Instruction -> Bool
 shouldIgnoreInst AllocaInst{} = True
@@ -149,29 +157,36 @@ findSwitchTarget defaultTarget idx casesList
 associateInst :: Instruction -> FuncOpContext (Maybe MemlogOp)
 associateInst inst
     | shouldIgnoreInst inst = return Nothing
-associateInst inst@LoadInst{} = liftM Just $ memlogPopWithErrorInst inst
-associateInst inst@StoreInst{ storeIsVolatile = False }
-    = liftM Just $ memlogPopWithErrorInst inst
+associateInst inst@LoadInst{} = do
+    op <- memlogPopWithErrorInst inst
+    case op of
+        AddrMemlogOp LoadOp _ -> return $ Just op
+        _ -> throwError $ printf "Expected LoadOp; got $s" (show op)
+associateInst inst@StoreInst{ storeIsVolatile = False } = do
+    op <- memlogPopWithErrorInst inst
+    case op of
+        AddrMemlogOp StoreOp _ -> return $ Just op
+        _ -> throwError $ printf "Expected StoreOp; got $s" (show op)
 associateInst inst@SelectInst{} = liftM Just $ memlogPopWithErrorInst inst
 associateInst inst@BranchInst{} = do
     op <- memlogPopWithErrorInst inst
     case op of
         BranchOp 0 -> put $ Just $ branchTrueTarget inst
         BranchOp 1 -> put $ Just $ branchFalseTarget inst
-        _ -> fail "Expected branch operation"
+        _ -> throwError $ printf "Expected branch operation; got %s" (show op)
     return $ Just op
 associateInst inst@SwitchInst{ switchDefaultTarget = defaultTarget,
                                switchCases = casesList } = do
     op <- memlogPopWithErrorInst inst
     case op of
         SwitchOp idx -> put $ Just $ findSwitchTarget defaultTarget idx casesList
-        _ ->  fail "Expected switch operation"
+        _ ->  throwError "Expected switch operation"
     return $ Just op
 associateInst inst@UnconditionalBranchInst{ unconditionalBranchTarget = target } = do
     put $ Just target
     liftM Just $ memlogPopWithErrorInst inst
 associateInst CallInst{ callFunction = FunctionC func } = do
-    lift $ do -- inside OpContext
+    lift $ lift $ do -- inside OpContext
         maybeRevMemlog <- execStateT (associateMemlogWithFunc func) $ Just mkAppList
         let revMemlog = fromMaybe (error "no memlog!") maybeRevMemlog
         return $ Just $ HelperFuncOp $ unAppList revMemlog
@@ -183,7 +198,10 @@ associateMemlogWithFunc func = addBlock $ head $ functionBody func
     where addBlock :: BasicBlock -> MemlogContext ()
           addBlock block = do
               ops <- lift get
-              (associated, nextBlock) <- lift $ runStateT (associateBasicBlock block) Nothing
+              (result, nextBlock) <- lift $ runStateT (runErrorT $ associateBasicBlock block) Nothing
+              associated <- case result of
+                  Right associated' -> return associated'
+                  Left err -> error err
               maybeRevMemlogList <- get
               case maybeRevMemlogList of
                   Just revMemlogList -> 

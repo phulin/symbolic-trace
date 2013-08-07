@@ -222,7 +222,14 @@ associateFuncs ops (before, middle, _) = unAppList revMemlogList
 
 showAssociated :: MemlogList -> String
 showAssociated theList = L.intercalate "\n\n\n" $ map showBlock theList
-    where showBlock (block, list) = show (functionName $ basicBlockFunction block) ++ ":" ++ show (basicBlockName block) ++ ":\n" ++ (L.intercalate "\n" $ map showInstOp list)
-          showInstOp (inst, maybeOp) = show inst ++ " =>\n\t" ++ showOp maybeOp
-          showOp (Just (HelperFuncOp helperMemlog)) = "HELPER: " ++ showAssociated helperMemlog
+
+showBlock :: (BasicBlock, InstOpList) -> String
+showBlock (block, list) = printf "%s:%s:\n%s"
+    (show $ functionName $ basicBlockFunction block)
+    (show $ basicBlockName block)
+    (L.intercalate "\n" $ map showInstOp list)
+    where showInstOp (inst, maybeOp)
+              = printf "%s =>\n\t%s" (show inst) (showOp maybeOp)
+          showOp (Just (HelperFuncOp helperMemlog))
+              = printf "HELPER: %s" $ showAssociated helperMemlog
           showOp maybeOp = show maybeOp

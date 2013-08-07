@@ -102,11 +102,15 @@ type OpContext = State [MemlogOp]
 type MemlogContext = StateT (Maybe MemlogAppList) OpContext
 -- Inside a basic block, watch out to see if we run into a control-flow instruction.
 type FuncOpContext = ErrorT String (StateT (Maybe BasicBlock) OpContext)
+
+lift2 :: OpContext a -> FuncOpContext a
+lift2 = lift . lift
+
 memlogPopMaybe :: FuncOpContext (Maybe MemlogOp)
 memlogPopMaybe = do
-    stream <- lift $ lift get
+    stream <- lift2 get
     case stream of
-        op : ops -> lift (lift (put ops)) >> return (Just op)
+        op : ops -> lift2 (put ops) >> return (Just op)
         [] -> return Nothing
 
 memlogPopErr :: Instruction -> FuncOpContext MemlogOp
@@ -122,7 +126,7 @@ associateBasicBlock block = mapM associateInstWithCopy $ basicBlockInstructions 
               maybeOp <- associateInst inst `catchError` handler
               return (inst, maybeOp)
           handler err = do
-              ops <- lift $ lift get
+              ops <- lift2 get
               throwError $ printf
                   "Error in basic block: %s\nNext ops: %s\n%s: %s"
                   err (show $ take 5 ops)
@@ -179,7 +183,7 @@ associateInst inst@SwitchInst{ switchDefaultTarget = defaultTarget,
     return $ Just op
 associateInst inst@UnconditionalBranchInst{ unconditionalBranchTarget = target } = put (Just target) >> liftM Just (memlogPopErr inst)
 associateInst CallInst{ callFunction = FunctionC func } = do
-    lift $ lift $ do -- inside OpContext
+    lift2 $ do -- inside OpContext
         maybeRevMemlog <- execStateT (associateMemlogWithFunc func) $ Just mkAppList
         let revMemlog = fromMaybe (error "no memlog!") maybeRevMemlog
         return $ Just $ HelperFuncOp $ unAppList revMemlog

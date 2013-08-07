@@ -110,11 +110,7 @@ memlogPop = do
         [] -> return Nothing
 
 memlogPopWithError :: String -> FuncOpContext MemlogOp
-memlogPopWithError errMsg = do
-    maybeOp <- memlogPop
-    case maybeOp of
-        Just op -> return op
-        Nothing -> error errMsg
+memlogPopWithError errMsg = fromMaybe (error errMsg) <$> memlogPop
 
 memlogPopWithErrorInst :: Instruction -> FuncOpContext MemlogOp
 memlogPopWithErrorInst inst = memlogPopWithError $ "Failed on block " ++ (show $ instructionBasicBlock inst)

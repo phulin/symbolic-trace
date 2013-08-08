@@ -1,3 +1,4 @@
+{-# LANGUAGE FlexibleContexts, FlexibleInstances, UndecidableInstances #-}
 module Memlog(MemlogOp(..), AddrOp(..), AddrEntry(..), AddrEntryType(..), AddrFlag(..), parseMemlog, associateFuncs, shouldIgnoreInst, pairListFind, InstOpList, MemlogList, Interesting) where
 
 import Control.Applicative
@@ -8,7 +9,7 @@ import Control.Monad.Trans(lift)
 import Control.Monad.Trans.Maybe
 import Data.Binary.Get(Get, runGet, getWord32host, getWord64host, skip)
 import Data.LLVM.Types
-import Data.Maybe(isJust, fromMaybe)
+import Data.Maybe(isJust, fromMaybe, catMaybes)
 import Data.Word(Word32, Word64)
 import Text.Printf(printf)
 import Debug.Trace
@@ -93,45 +94,98 @@ type MemlogAppList = AppList (BasicBlock, InstOpList)
 
 -- Monads for doing the association.
 
--- We always keep track of the MemlogOps which are left, in the inner OpContext monad.
+data MemlogState = MemlogState{
+    -- Work already done in current block. We use this instead of a mapM so we
+    -- can do better error reporting.
+    memlogCurrentAssociated :: AppList (Instruction, Maybe MemlogOp),
+    -- Already associated blocks. If the Maybe is Nothing, we don't keep track
+    -- (i.e. this is loading code, not something we're actually interested in)
+    memlogAssociatedBlocks :: Maybe MemlogAppList,
+    memlogNextBlock :: Maybe BasicBlock -- Next block to process
+}
+
+noMemlogState :: MemlogState
+noMemlogState = MemlogState{
+    memlogCurrentAssociated = mkAppList,
+    memlogAssociatedBlocks = Just mkAppList,
+    memlogNextBlock = Nothing
+}
+
+class (Functor m, Monad m, MonadState MemlogState m) => Memlogish m where
+instance (Functor m, Monad m, MonadState MemlogState m) => Memlogish m
+
+class (Functor m, Monad m) => OpStream m where
+    getOpStream :: m [MemlogOp]
+    putOpStream :: [MemlogOp] -> m ()
+
 type OpContext = State [MemlogOp]
--- Across basic blocks, we keep track of the MemlogOps for each block.
--- The Maybe keeps track of whether we are actually keeping track
--- (i.e. this is during user code, not loading code)
--- The list is kept reversed for efficiency reasons.
-type MemlogContext = StateT (Maybe MemlogAppList) OpContext
--- Inside a basic block, watch out to see if we run into a control-flow instruction.
-type FuncOpContext = ErrorT String (StateT (Maybe BasicBlock) OpContext)
+type MemlogContext = StateT MemlogState OpContext
+type FuncOpContext = ErrorT String MemlogContext
 
-lift2 :: OpContext a -> FuncOpContext a
-lift2 = lift . lift
+instance OpStream OpContext where
+    getOpStream = get
+    putOpStream = put
 
-memlogPopMaybe :: FuncOpContext (Maybe MemlogOp)
+instance OpStream MemlogContext where
+    getOpStream = lift getOpStream
+    putOpStream = lift . putOpStream
+
+instance OpStream FuncOpContext where
+    getOpStream = lift getOpStream
+    putOpStream = lift . putOpStream
+
+memlogPopMaybe :: OpStream m => m (Maybe MemlogOp)
 memlogPopMaybe = do
-    stream <- lift2 get
+    stream <- getOpStream
     case stream of
-        op : ops -> lift2 (put ops) >> return (Just op)
+        op : ops -> putOpStream ops >> return (Just op)
         [] -> return Nothing
 
-memlogPopErr :: Instruction -> FuncOpContext MemlogOp
+memlogPopErr :: OpStream m => Instruction -> m MemlogOp
 memlogPopErr inst = fromMaybe err <$> memlogPopMaybe
     where err = error $ printf "Failed on block %s"
               (show $ instructionBasicBlock inst)
 
+putNextBlock :: Memlogish m => BasicBlock -> m ()
+putNextBlock block = modify (\s -> s{ memlogNextBlock = Just block })
+clearNextBlock :: Memlogish m => m ()
+clearNextBlock = modify (\s -> s{ memlogNextBlock = Nothing })
+
+clearCurrentAssociated :: Memlogish m => m ()
+clearCurrentAssociated = modify (\s -> s{ memlogCurrentAssociated = mkAppList })
+appendInstOp :: Memlogish m => (Instruction, Maybe MemlogOp) -> m ()
+appendInstOp instOp
+    = modify (\s -> s{
+        memlogCurrentAssociated = memlogCurrentAssociated s +: instOp })
+
+appendAssociated :: Memlogish m => (BasicBlock, InstOpList) -> m ()
+appendAssociated block = do
+    associated <- memlogAssociatedBlocks <$> get
+    case associated of
+        Nothing -> return ()
+        Just associated' ->
+            modify (\s -> s{ memlogAssociatedBlocks = Just $ associated' +: block })
+
 t x = traceShow x x
 
 associateBasicBlock :: BasicBlock -> FuncOpContext InstOpList
-associateBasicBlock block = mapM associateInstWithCopy $ basicBlockInstructions block
+associateBasicBlock block = do
+    clearCurrentAssociated
+    mapM associateInstWithCopy $ basicBlockInstructions block
     where associateInstWithCopy inst = do
               maybeOp <- associateInst inst `catchError` handler
+              appendInstOp (inst, maybeOp)
               return (inst, maybeOp)
           handler err = do
-              ops <- lift2 get
+              ops <- getOpStream
+              currentAssociated <- memlogCurrentAssociated <$> get
+              Just associatedBlocks <- memlogAssociatedBlocks <$> get
               throwError $ printf
-                  "Error in basic block: %s\nNext ops: %s\n%s: %s"
-                  err (show $ take 5 ops)
-                  (show $ functionName $ basicBlockFunction block)
-                  (show block)
+                  "Error in basic block: %s\n\nNext ops: %s\n\nCurrent block:\n%s\n\nPrevious block:\n%s"
+                  err
+                  (show $ take 5 ops)
+                  (showBlock (block, unAppList currentAssociated))
+                  (concatMap showBlock $ suffix 1 associatedBlocks)
 
 shouldIgnoreInst :: Instruction -> Bool
 shouldIgnoreInst AllocaInst{} = True
@@ -160,34 +214,35 @@ associateInst inst@LoadInst{} = do
     op <- memlogPopErr inst
     case op of
         AddrMemlogOp LoadOp _ -> return $ Just op
-        _ -> throwError $ printf "Expected LoadOp; got $s" (show op)
+        _ -> throwError $ printf "Expected LoadOp; got %s" (show op)
 associateInst inst@StoreInst{ storeIsVolatile = False } = do
     op <- memlogPopErr inst
     case op of
         AddrMemlogOp StoreOp _ -> return $ Just op
-        _ -> throwError $ printf "Expected StoreOp; got $s" (show op)
+        _ -> throwError $ printf "Expected StoreOp; got %s" (show op)
 associateInst inst@SelectInst{} = liftM Just $ memlogPopErr inst
 associateInst inst@BranchInst{} = do
     op <- memlogPopErr inst
     case op of
-        BranchOp 0 -> put $ Just $ branchTrueTarget inst
-        BranchOp 1 -> put $ Just $ branchFalseTarget inst
+        BranchOp 0 -> putNextBlock $ branchTrueTarget inst
+        BranchOp 1 -> putNextBlock $ branchFalseTarget inst
         _ -> throwError $ printf "Expected branch operation; got %s" (show op)
     return $ Just op
 associateInst inst@SwitchInst{ switchDefaultTarget = defaultTarget,
                                switchCases = casesList } = do
     op <- memlogPopErr inst
     case op of
-        SwitchOp idx -> put $ Just $ findSwitchTarget defaultTarget idx casesList
+        SwitchOp idx -> putNextBlock $ findSwitchTarget defaultTarget idx casesList
         _ -> throwError "Expected switch operation"
     return $ Just op
-associateInst inst@UnconditionalBranchInst{ unconditionalBranchTarget = target } = put (Just target) >> liftM Just (memlogPopErr inst)
+associateInst inst@UnconditionalBranchInst{ unconditionalBranchTarget = target }
+    = putNextBlock target >> liftM Just (memlogPopErr inst)
 associateInst CallInst{ callFunction = FunctionC func } = do
-    lift2 $ do -- inside OpContext
-        maybeRevMemlog <- execStateT (associateMemlogWithFunc func) $ Just mkAppList
-        let revMemlog = fromMaybe (error "no memlog!") maybeRevMemlog
-        return $ Just $ HelperFuncOp $ unAppList revMemlog
-associateInst RetInst{} = put Nothing >> return Nothing
+    maybeRevMemlog <- memlogAssociatedBlocks <$>
+        (lift $ lift $ execStateT (associateMemlogWithFunc func) noMemlogState)
+    let revMemlog = fromMaybe (error "no memlog!") maybeRevMemlog
+    return $ Just $ HelperFuncOp $ unAppList revMemlog
+associateInst RetInst{} = clearNextBlock >> return Nothing
 associateInst _ = return Nothing
 
 associateMemlogWithFunc :: Function -> MemlogContext ()
@@ -195,15 +250,12 @@ associateMemlogWithFunc func = addBlock $ head $ functionBody func
     where addBlock :: BasicBlock -> MemlogContext ()
           addBlock block = do
               ops <- lift get
-              (result, nextBlock) <- lift $ runStateT (runErrorT $ associateBasicBlock block) Nothing
+              result <- runErrorT $ associateBasicBlock block
               associated <- case result of
                   Right associated' -> return associated'
                   Left err -> error err
-              maybeRevMemlogList <- get
-              case maybeRevMemlogList of
-                  Just revMemlogList -> 
-                      put $ Just $ revMemlogList +: (block, associated)
-                  _ -> return ()
+              appendAssociated (block, associated)
+              nextBlock <- memlogNextBlock <$> get
               case nextBlock of
                   Just nextBlock' -> addBlock nextBlock'
                   Nothing -> return ()
@@ -211,17 +263,18 @@ associateMemlogWithFunc func = addBlock $ head $ functionBody func
 type Interesting = ([Function], [Function], [Function])
 
 associateFuncs :: [MemlogOp] -> Interesting -> MemlogList
-associateFuncs ops (before, middle, _) = unAppList revMemlogList
-    where revMemlogList = fromMaybe (error "No memlog list") maybeRevMemlogList
-          (maybeRevMemlogList, leftoverOps) = runState (beforeM >> middleM) ops
-          beforeM = execStateT (mapM_ associateMemlogWithFunc before) Nothing
-          middleM = execStateT (mapM_ associateMemlogWithFunc middle) $ Just mkAppList
+associateFuncs ops (before, middle, _) = unAppList revMemlog
+    where revMemlog = fromMaybe (error "No memlog list") maybeRevMemlog
+          maybeRevMemlog = memlogAssociatedBlocks $
+              evalState (beforeM >> middleM) ops
+          beforeM = execStateT (mapM_ associateMemlogWithFunc before) noMemlogState
+          middleM = execStateT (mapM_ associateMemlogWithFunc middle) noMemlogState
 
 showAssociated :: MemlogList -> String
 showAssociated theList = L.intercalate "\n\n\n" $ map showBlock theList
 
 showBlock :: (BasicBlock, InstOpList) -> String
-showBlock (block, list) = printf "%s:%s:\n%s"
+showBlock (block, list) = printf "%s: %s:\n%s"
     (show $ functionName $ basicBlockFunction block)
     (show $ basicBlockName block)
     (L.intercalate "\n" $ map showInstOp list)

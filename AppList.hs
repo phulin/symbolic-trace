@@ -1,5 +1,5 @@
 {-# LANGUAGE FlexibleContexts #-}
-module AppList(AppList, mkAppList, singleAppList, unAppList, (+:)) where
+module AppList(AppList, mkAppList, singleAppList, unAppList, (+:), suffix) where
 
 newtype AppList a = MkAppList [a]
     deriving (Eq, Ord)
@@ -19,3 +19,6 @@ singleAppList x = MkAppList [x]
 
 unAppList :: AppList a -> [a]
 unAppList (MkAppList l) = reverse l
+
+suffix :: Int -> AppList a -> [a]
+suffix n (MkAppList l) = reverse $ take n l

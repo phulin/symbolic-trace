@@ -297,6 +297,9 @@ valueToExpr (GlobalVariableC GlobalVariable{ globalVariableName = name,
     return $ InputExpr (typeToExprT varType) (idLoc func name)
 valueToExpr val = warning ("Couldn't find expr for " ++ show val) >> fail ""
 
+maybeValueToExpr :: (Monad m) => Value -> MaybeT m Expr
+maybeValueToExpr = buildExprToMaybeExpr . valueToExpr
+
 lookupValue :: Value -> BuildExpr Expr
 lookupValue val = do
     expr <- valueToExpr val
@@ -451,9 +454,9 @@ storeUpdate (inst@StoreInst{ storeIsVolatile = False,
                              storeValue = val,
                              storeAddress = addrValue },
              (Just (AddrMemlogOp StoreOp addr))) = do
-    value <- buildExprToMaybeExpr $ valueToExpr val
+    value <- maybeValueToExpr val
     currentIP <- getCurrentIP
-    origin <- optional $ deIntToPtr <$> (buildExprToMaybeExpr $ valueToExpr addrValue)
+    origin <- optional $ deIntToPtr <$> maybeValueToExpr addrValue
     when (interestingOp value addr) $
         message $ MemoryMessage StoreOp (pretty addr) value origin
     let locInfo = noLocInfo{ locExpr = value, locOrigin = currentIP }
@@ -494,7 +497,7 @@ failedUpdate instOp = warnInstOp instOp >> fail ""
 
 controlFlowUpdate :: (Instruction, Maybe MemlogOp) -> MaybeSymb ()
 controlFlowUpdate (RetInst{ retInstValue = Just val }, _) = do
-    expr <- buildExprToMaybeExpr (valueToExpr val)
+    expr <- maybeValueToExpr val
     putRetVal $ Just expr
 controlFlowUpdate (RetInst{}, _) = return ()
 controlFlowUpdate (UnconditionalBranchInst{}, _)
@@ -503,7 +506,7 @@ controlFlowUpdate (BranchInst{ branchTrueTarget = trueTarget,
                                branchFalseTarget = falseTarget,
                                branchCondition = cond },
                    Just (BranchOp idx)) = void $ optional $ do
-    condExpr <- buildExprToMaybeExpr $ valueToExpr cond
+    condExpr <- maybeValueToExpr cond
     message $ BranchMessage condExpr (idx == 0)
 controlFlowUpdate (SwitchInst{}, _) = return ()
 controlFlowUpdate (CallInst{ callFunction = ExternalFunctionC func,

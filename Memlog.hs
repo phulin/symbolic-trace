@@ -263,7 +263,6 @@ associateInst inst@UnconditionalBranchInst{ unconditionalBranchTarget = target }
         BranchOp 0 -> putNextBlock target
         _ -> throwError $ printf "Expected branch operation; got %s" (show op)
     return $ Just op
-
 associateInst inst@CallInst{ callFunction = ExternalFunctionC func,
                              callAttrs = attrs }
     | FANoReturn `elem` externalFunctionAttrs func = skipRest >> return Nothing

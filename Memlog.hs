@@ -101,14 +101,16 @@ data MemlogState = MemlogState{
     -- Already associated blocks. If the Maybe is Nothing, we don't keep track
     -- (i.e. this is loading code, not something we're actually interested in)
     memlogAssociatedBlocks :: Maybe MemlogAppList,
-    memlogNextBlock :: Maybe BasicBlock -- Next block to process
+    memlogNextBlock :: Maybe BasicBlock, -- Next block to process
+    memlogSkipRest :: Bool
 }
 
 noMemlogState :: MemlogState
 noMemlogState = MemlogState{
     memlogCurrentAssociated = mkAppList,
     memlogAssociatedBlocks = Just mkAppList,
-    memlogNextBlock = Nothing
+    memlogNextBlock = Nothing,
+    memlogSkipRest = False
 }
 
 class (Functor m, Monad m, MonadState MemlogState m) => Memlogish m where
@@ -166,26 +168,38 @@ appendAssociated block = do
         Just associated' ->
             modify (\s -> s{ memlogAssociatedBlocks = Just $ associated' +: block })
 
+skipRest :: Memlogish m => m ()
+skipRest = modify (\s -> s{ memlogSkipRest = True })
+
 t x = traceShow x x
 
 associateBasicBlock :: BasicBlock -> FuncOpContext InstOpList
 associateBasicBlock block = do
     clearCurrentAssociated
+    clearNextBlock
+    modify (\s -> s{ memlogSkipRest = False })
     mapM associateInstWithCopy $ basicBlockInstructions block
     where associateInstWithCopy inst = do
-              maybeOp <- associateInst inst `catchError` handler
-              appendInstOp (inst, maybeOp)
-              return (inst, maybeOp)
-          handler err = do
+              skip <- memlogSkipRest <$> get
+              case skip of
+                  True -> return (inst, Nothing)
+                  False -> do
+                      maybeOp <- associateInst inst `catchError` handler inst
+                      appendInstOp (inst, maybeOp)
+                      return (inst, maybeOp)
+          handler inst err = do
               ops <- getOpStream
               currentAssociated <- memlogCurrentAssociated <$> get
               Just associatedBlocks <- memlogAssociatedBlocks <$> get
               throwError $ printf
-                  "Error in basic block: %s\n\nNext ops: %s\n\nCurrent block:\n%s\n\nPrevious block:\n%s"
-                  err
-                  (show $ take 5 ops)
+                  ("Error during alignment.\n\n" ++
+                      "Previous block:\n%s\n\nCurrent block:\n%s\n%s\n\n" ++
+                      "Next ops:\n%s\n\nError: %s")
+                  (L.intercalate "\n\n" $ map showBlock $ suffix 1 associatedBlocks)
                   (showBlock (block, unAppList currentAssociated))
-                  (concatMap showBlock $ suffix 1 associatedBlocks)
+                  (show inst)
+                  (L.intercalate "\n" $ map show $ take 5 ops)
+                  err
 
 shouldIgnoreInst :: Instruction -> Bool
 shouldIgnoreInst AllocaInst{} = True
@@ -205,6 +219,12 @@ findSwitchTarget defaultTarget idx casesList
     = pairListFind test defaultTarget casesList
     where test (ConstantC (ConstantInt{ constantIntValue = int }))
               | int == fromIntegral idx = True
+          test (ConstantC (ConstantArray{ constantArrayValues = array }))
+              = test $ head array
+          test (ConstantC (ConstantVector{ constantVectorValues = vector }))
+              = test $ head vector
+          test (ConstantC (ConstantAggregateZero{}))
+              | idx == 0 = True
           test _ = False
 
 associateInst :: Instruction -> FuncOpContext (Maybe MemlogOp)
@@ -235,25 +255,41 @@ associateInst inst@SwitchInst{ switchDefaultTarget = defaultTarget,
         SwitchOp idx -> putNextBlock $ findSwitchTarget defaultTarget idx casesList
         _ -> throwError "Expected switch operation"
     return $ Just op
-associateInst inst@UnconditionalBranchInst{ unconditionalBranchTarget = target }
-    = putNextBlock target >> liftM Just (memlogPopErr inst)
+associateInst inst@UnconditionalBranchInst{ unconditionalBranchTarget = target } = do
+    op <- memlogPopErr inst
+    case op of
+        BranchOp 0 -> putNextBlock target
+        _ -> throwError $ printf "Expected branch operation; got %s" (show op)
+    return $ Just op
+
+associateInst CallInst{ callFunction = ExternalFunctionC func,
+                        callAttrs = attrs }
+    | FANoReturn `elem` externalFunctionAttrs func = skipRest >> return Nothing
+    | FANoReturn `elem` attrs = skipRest >> return Nothing
+    | "cpu_loop_exit" == identifierAsString (externalFunctionName func)
+        = skipRest >> return Nothing
 associateInst CallInst{ callFunction = FunctionC func } = do
-    maybeRevMemlog <- memlogAssociatedBlocks <$>
-        (lift $ lift $ execStateT (associateMemlogWithFunc func) noMemlogState)
+    (eitherError, memlogState) <- lift $ lift $
+        runStateT (runErrorT $ associateMemlogWithFunc func) noMemlogState
+    case eitherError of
+        Right () -> return ()
+        Left err -> throwError err
+    let maybeRevMemlog = memlogAssociatedBlocks memlogState
     let revMemlog = fromMaybe (error "no memlog!") maybeRevMemlog
+    when (memlogSkipRest memlogState) skipRest
     return $ Just $ HelperFuncOp $ unAppList revMemlog
 associateInst RetInst{} = clearNextBlock >> return Nothing
+associateInst UnreachableInst{} = do
+    skip <- memlogSkipRest <$> get
+    throwError $ printf "Unreachable instruction; skipRest = %s" (show skip)
 associateInst _ = return Nothing
 
-associateMemlogWithFunc :: Function -> MemlogContext ()
+associateMemlogWithFunc :: Function -> FuncOpContext ()
 associateMemlogWithFunc func = addBlock $ head $ functionBody func
-    where addBlock :: BasicBlock -> MemlogContext ()
+    where addBlock :: BasicBlock -> FuncOpContext ()
           addBlock block = do
               ops <- lift get
-              result <- runErrorT $ associateBasicBlock block
-              associated <- case result of
-                  Right associated' -> return associated'
-                  Left err -> error err
+              associated <- associateBasicBlock block
               appendAssociated (block, associated)
               nextBlock <- memlogNextBlock <$> get
               case nextBlock of
@@ -265,10 +301,14 @@ type Interesting = ([Function], [Function], [Function])
 associateFuncs :: [MemlogOp] -> Interesting -> MemlogList
 associateFuncs ops (before, middle, _) = unAppList revMemlog
     where revMemlog = fromMaybe (error "No memlog list") maybeRevMemlog
-          maybeRevMemlog = memlogAssociatedBlocks $
-              evalState (beforeM >> middleM) ops
-          beforeM = execStateT (mapM_ associateMemlogWithFunc before) noMemlogState
-          middleM = execStateT (mapM_ associateMemlogWithFunc middle) noMemlogState
+          maybeRevMemlog = memlogAssociatedBlocks $ evalState (beforeM >> middleM) ops
+          beforeM = execStateT (associate before) noMemlogState
+          middleM = execStateT (associate middle) noMemlogState
+          associate funcs = do
+              result <- runErrorT $ mapM_ associateMemlogWithFunc funcs
+              case result of
+                  Right associated -> return associated
+                  Left err -> error err
 
 showAssociated :: MemlogList -> String
 showAssociated theList = L.intercalate "\n\n\n" $ map showBlock theList
@@ -278,8 +318,10 @@ showBlock (block, list) = printf "%s: %s:\n%s"
     (show $ functionName $ basicBlockFunction block)
     (show $ basicBlockName block)
     (L.intercalate "\n" $ map showInstOp list)
-    where showInstOp (inst, maybeOp)
-              = printf "%s =>\n\t%s" (show inst) (showOp maybeOp)
-          showOp (Just (HelperFuncOp helperMemlog))
-              = printf "HELPER: %s" $ showAssociated helperMemlog
-          showOp maybeOp = show maybeOp
+    where showInstOp (inst, Just op)
+              = printf "%s =>\n\t%s" (show inst) (showOp op)
+          showInstOp (inst, Nothing) = show inst
+          showOp (HelperFuncOp helperMemlog)
+              = printf "\n===HELPER===:\n%s\n===END HELPER===" $
+                  showAssociated helperMemlog
+          showOp op = show op

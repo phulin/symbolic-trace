@@ -31,7 +31,9 @@ data MemlogOp = AddrMemlogOp AddrOp AddrEntry |
                 SelectOp Word32 |
                 SwitchOp Word32 | 
                 ExceptionOp |
-                HelperFuncOp MemlogList -- For calls out to helper functions
+                HelperFuncOp MemlogList | -- For calls out to helper functions
+                MemsetOp AddrEntry |
+                MemcpyOp AddrEntry AddrEntry
     deriving (Eq, Ord, Show)
 
 instance Pretty AddrEntry where
@@ -262,12 +264,24 @@ associateInst inst@UnconditionalBranchInst{ unconditionalBranchTarget = target }
         _ -> throwError $ printf "Expected branch operation; got %s" (show op)
     return $ Just op
 
-associateInst CallInst{ callFunction = ExternalFunctionC func,
-                        callAttrs = attrs }
+associateInst inst@CallInst{ callFunction = ExternalFunctionC func,
+                             callAttrs = attrs }
     | FANoReturn `elem` externalFunctionAttrs func = skipRest >> return Nothing
     | FANoReturn `elem` attrs = skipRest >> return Nothing
-    | "cpu_loop_exit" == identifierAsString (externalFunctionName func)
-        = skipRest >> return Nothing
+    | "cpu_loop_exit" == name = skipRest >> return Nothing
+    | "llvm.memset." `L.isPrefixOf` name = do
+        op <- memlogPopErr inst
+        case op of
+            AddrMemlogOp StoreOp addr -> return $ Just $ MemsetOp addr
+            _ -> throwError $ printf "Expected store operation (memset)"
+    | "llvm.memcpy." `L.isPrefixOf` name = do
+        op1 <- memlogPopErr inst
+        op2 <- memlogPopErr inst
+        case (op1, op2) of
+            (AddrMemlogOp LoadOp src, AddrMemlogOp StoreOp dest) ->
+                return $ Just $ MemcpyOp src dest
+            _ -> throwError $ printf "Expected load and store operation (memcpy)"
+    where name = identifierAsString $ externalFunctionName func
 associateInst CallInst{ callFunction = FunctionC func } = do
     (eitherError, memlogState) <- lift $ lift $
         runStateT (runErrorT $ associateMemlogWithFunc func) noMemlogState

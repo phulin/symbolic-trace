@@ -176,6 +176,10 @@ locInfoInsert :: Symbolicish m => Loc -> LocInfo -> m ()
 locInfoInsert key locInfo = do
     info <- getInfo
     putInfo $ M.insert key locInfo info
+exprInsert :: Symbolicish m => Loc -> Expr -> m ()
+exprInsert key expr = do
+    currentIP <- getCurrentIP
+    locInfoInsert key LocInfo{ locExpr = expr, locOrigin = currentIP }
 exprFindInfo :: Symbolicish m => Expr -> Loc -> m Expr
 exprFindInfo def key = locExpr <$> M.findWithDefault defLocInfo key <$> getInfo
     where defLocInfo = noLocInfo{ locExpr = def }
@@ -297,7 +301,7 @@ valueToExpr (GlobalVariableC GlobalVariable{ globalVariableName = name,
     return $ InputExpr (typeToExprT varType) (idLoc func name)
 valueToExpr val = warning ("Couldn't find expr for " ++ show val) >> fail ""
 
-maybeValueToExpr :: (Monad m) => Value -> MaybeT m Expr
+maybeValueToExpr :: Value -> MaybeSymb Expr
 maybeValueToExpr = buildExprToMaybeExpr . valueToExpr
 
 lookupValue :: Value -> BuildExpr Expr
@@ -455,12 +459,10 @@ storeUpdate (inst@StoreInst{ storeIsVolatile = False,
                              storeAddress = addrValue },
              (Just (AddrMemlogOp StoreOp addr))) = do
     value <- maybeValueToExpr val
-    currentIP <- getCurrentIP
     origin <- optional $ deIntToPtr <$> maybeValueToExpr addrValue
     when (interestingOp value addr) $
         message $ MemoryMessage StoreOp (pretty addr) value origin
-    let locInfo = noLocInfo{ locExpr = value, locOrigin = currentIP }
-    locInfoInsert (MemLoc addr) locInfo
+    exprInsert (MemLoc addr) value
 -- This will trigger twice with each IP update, but that's okay because the
 -- second one is the one we want.
 storeUpdate (StoreInst{ storeIsVolatile = True,
@@ -477,9 +479,7 @@ exprUpdate instOp@(inst, _) = do
     func <- getCurrentFunction
     let builtExpr = foldl1 (<||>) instToExprs inst <|> memInstToExpr instOp
     expr <- buildExprToMaybeExpr builtExpr
-    currentIP <- getCurrentIP
-    let locInfo = noLocInfo{ locExpr = expr, locOrigin = currentIP }
-    locInfoInsert (idLoc func id) locInfo
+    exprInsert (idLoc func id) expr
 
 ignoreUpdate :: (Instruction, Maybe MemlogOp) -> MaybeSymb ()
 ignoreUpdate (AllocaInst{}, _) = return ()
@@ -518,11 +518,47 @@ controlFlowUpdate (CallInst{ callFunction = ExternalFunctionC func,
 controlFlowUpdate (inst@UnreachableInst{}, _) = warning "UNREACHABLE INSTRUCTION!"
 controlFlowUpdate _ = fail ""
 
+-- FIXME: Implement a more reasonable model for "real" memcpy/memset
+-- (i.e. those that are for arrays, not structs)
+memIntrinsicUpdate :: (Instruction, Maybe MemlogOp) -> MaybeSymb ()
+memIntrinsicUpdate (CallInst{ callFunction = ExternalFunctionC func,
+                              callArguments =
+                                  [_, (value, _), (lenValue, _), _, _] },
+                    Just (MemsetOp addr)) = do
+    val <- maybeValueToExpr value
+    lenExpr <- maybeValueToExpr lenValue
+    len <- case lenExpr of
+        ILitExpr len' -> return len'
+        _ -> warning "Can't extract memset length" >> fail ""
+    currentExpr <- valueAt (MemLoc addr)
+    case currentExpr of
+        StructExpr{} -> warning "Zeroing struct"
+        _
+            | len > 16 -> warning "Array memset"
+            | otherwise -> return ()
+    exprInsert (MemLoc addr) val
+memIntrinsicUpdate (CallInst{ callFunction = ExternalFunctionC func,
+                              callArguments = [_, _, (lenValue, _), _, _] },
+                    Just (MemcpyOp src dest)) = do
+    lenExpr <- maybeValueToExpr lenValue
+    len <- case lenExpr of
+        ILitExpr len' -> return len'
+        _ -> warning "Can't extract memcpy length" >> fail ""
+    srcExpr <- valueAt $ MemLoc src
+    case srcExpr of
+        StructExpr{} -> return ()
+        _
+            | len > 16 -> warning "Array memcpy"
+            | otherwise -> return ()
+    exprInsert (MemLoc dest) srcExpr
+memIntrinsicUpdate _ = fail ""
+
 infoUpdaters :: [(Instruction, Maybe MemlogOp) -> MaybeSymb ()]
 infoUpdaters = [ ignoreUpdate,
                  exprUpdate,
                  storeUpdate,
                  controlFlowUpdate,
+                 memIntrinsicUpdate,
                  failedUpdate ]
 
 traceInstOp :: (Instruction, Maybe MemlogOp) -> a -> a

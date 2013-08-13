@@ -74,7 +74,7 @@ process state (handle, _, _) = do
 -- Command line arguments
 opts :: [OptDescr (Options -> Options)]
 opts =
-    [ Option ['d'] ["debug-ip"]
+    [ Option [] ["debug-ip"]
         (ReqArg (\a o -> o{ optDebugIP = Just $ read a }) "Need IP")
         "Run in debug mode on a given IP; write out trace at that IP."
     , Option ['q'] ["qemu-dir"]
@@ -83,10 +83,13 @@ opts =
     , Option ['t'] ["qemu-target"]
         (ReqArg (\a o -> o{ optQemuTarget = a }) "Need triple")
         "Run specified QEMU target. Default i386-linux-user."
+    , Option ['d'] ["log-dir"]
+        (ReqArg (\a o -> o{ optLogDir = a }) "Need dir")
+        "Place or look for QEMU LLVM logs in a given dir."
     ]
 
-runQemu :: String -> String -> [String] -> IO ()
-runQemu dir target prog = do
+runQemu :: String -> String -> String -> [String] -> IO ()
+runQemu dir target logdir prog = do
     arch <- case map T.unpack $ T.splitOn "-" (T.pack target) of
         [arch, _, _] -> return arch
         _ -> putStrLn "Bad target triple." >> exitFailure
@@ -102,7 +105,8 @@ runQemu dir target prog = do
     setCurrentDirectory dir
     let qemu = target </> printf "qemu-%s" arch
     let plugin = target </> "panda_plugins" </> "panda_llvm_trace.so"
-    let qemuArgs = ["-panda-plugin", plugin] ++ progShifted
+    let qemuArgs = ["-panda-plugin", plugin,
+            "-panda-arg", "llvm_trace:base=" ++ logdir] ++ progShifted
     putStrLn $ printf "Running QEMU at %s with args %s..." qemu (show qemuArgs)
     exitCode <- rawSystem qemu qemuArgs
     case exitCode of
@@ -122,14 +126,17 @@ main = do
 
     -- Run QEMU if necessary
     case optQemuDir options of
-        Just dir -> runQemu dir (optQemuTarget options) nonOptions
+        Just dir -> runQemu dir (optQemuTarget options) (optLogDir options)
+            nonOptions
         Nothing -> return ()
 
     -- Load LLVM files and dynamic logs
-    putStrLn "Loading LLVM module from /tmp/llvm-mod.bc."
-    theMod <- parseLLVMFile defaultParserOptions "/tmp/llvm-mod.bc"
-    seq theMod $ putStrLn "Parsing execution log."
-    funcNameList <- lines <$> readFile "/tmp/llvm-functions.log"
+    let llvmMod = optLogDir options </> "llvm-mod.bc"
+    let functionLog = optLogDir options </> "llvm-functions.log"
+    printf "Loading LLVM module from %s.\n" llvmMod
+    theMod <- parseLLVMFile defaultParserOptions llvmMod
+    seq theMod $ printf "Parsing execution log from %s.\n" functionLog
+    funcNameList <- lines <$> readFile functionLog
     let findFunc name = fromMaybe (error $ "Couldn't find function " ++ name) $ findFunctionByName theMod name
     let funcList = map findFunc funcNameList
     let interestingFuncs = interesting "main" funcList

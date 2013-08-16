@@ -99,6 +99,7 @@ type MemlogAppList = AppList (BasicBlock, InstOpList)
 -- Monads for doing the association.
 
 data MemlogState = MemlogState{
+    memlogOpStream :: [MemlogOp],
     -- Work already done in current block. We use this instead of a mapM so we
     -- can do better error reporting.
     memlogCurrentAssociated :: AppList (Instruction, Maybe MemlogOp),
@@ -111,6 +112,7 @@ data MemlogState = MemlogState{
 
 noMemlogState :: MemlogState
 noMemlogState = MemlogState{
+    memlogOpStream = [],
     memlogCurrentAssociated = mkAppList,
     memlogAssociatedBlocks = Just mkAppList,
     memlogNextBlock = Nothing,
@@ -120,49 +122,31 @@ noMemlogState = MemlogState{
 class (Functor m, Monad m, MonadState MemlogState m) => Memlogish m where
 instance (Functor m, Monad m, MonadState MemlogState m) => Memlogish m
 
-class (Functor m, Monad m) => OpStream m where
-    getOpStream :: m [MemlogOp]
-    putOpStream :: [MemlogOp] -> m ()
-
-type OpContext = State [MemlogOp]
-type MemlogContext = StateT MemlogState OpContext
-
-instance OpStream OpContext where
-    getOpStream = get
-    putOpStream = put
-
-instance OpStream MemlogContext where
-    getOpStream = lift getOpStream
-    putOpStream = lift . putOpStream
+type MemlogContext = State MemlogState
 
 #ifdef DEBUG
 type FuncOpContext = ErrorT String MemlogContext
-
-instance OpStream FuncOpContext where
-    getOpStream = lift getOpStream
-    putOpStream = lift . putOpStream
-
-liftFuncOp :: OpContext a -> FuncOpContext a
-liftFuncOp = lift . lift
 #else
 type FuncOpContext = MemlogContext
 
 runErrorT = liftM Right
 throwError s = fail s
 catchError c h = c
-
-liftFuncOp :: OpContext a -> FuncOpContext a
-liftFuncOp = lift
 #endif
 
-memlogPopMaybe :: OpStream m => m (Maybe MemlogOp)
+getOpStream :: Memlogish m => m [MemlogOp]
+getOpStream = memlogOpStream <$> get
+putOpStream :: Memlogish m => [MemlogOp] -> m ()
+putOpStream stream = modify (\s -> s{ memlogOpStream = stream })
+
+memlogPopMaybe :: Memlogish m => m (Maybe MemlogOp)
 memlogPopMaybe = do
     stream <- getOpStream
     case stream of
         op : ops -> putOpStream ops >> return (Just op)
         [] -> return Nothing
 
-memlogPopErr :: OpStream m => Instruction -> m MemlogOp
+memlogPopErr :: Memlogish m => Instruction -> m MemlogOp
 memlogPopErr inst = fromMaybe err <$> memlogPopMaybe
     where err = error $ printf "Failed on block %s"
               (show $ instructionBasicBlock inst)
@@ -300,8 +284,11 @@ associateInst inst@CallInst{ callFunction = ExternalFunctionC func,
             _ -> throwError $ printf "Expected load and store operation (memcpy)"
     where name = identifierAsString $ externalFunctionName func
 associateInst CallInst{ callFunction = FunctionC func } = do
-    (eitherError, memlogState) <- liftFuncOp $
-        runStateT (runErrorT $ associateMemlogWithFunc func) noMemlogState
+    opStream <- getOpStream
+    let (eitherError, memlogState)
+            = runState (runErrorT $ associateMemlogWithFunc func)
+                noMemlogState{ memlogOpStream = opStream }
+    putOpStream $ memlogOpStream memlogState
     case eitherError of
         Right () -> return ()
         Left err -> throwError err
@@ -332,9 +319,11 @@ type Interesting = ([Function], [Function], [Function])
 associateFuncs :: [MemlogOp] -> Interesting -> MemlogList
 associateFuncs ops (before, middle, _) = unAppList revMemlog
     where revMemlog = fromMaybe (error "No memlog list") maybeRevMemlog
-          maybeRevMemlog = memlogAssociatedBlocks $ evalState (beforeM >> middleM) ops
-          beforeM = execStateT (associate before) noMemlogState
-          middleM = execStateT (associate middle) noMemlogState
+          maybeRevMemlog = memlogAssociatedBlocks $ middleM
+          beforeM = execState (associate before)
+              noMemlogState{ memlogOpStream = ops }
+          middleM = execState (associate middle)
+              noMemlogState{ memlogOpStream = memlogOpStream beforeM }
           associate funcs = do
               result <- runErrorT $ mapM_ associateMemlogWithFunc funcs
               case result of

@@ -1,9 +1,11 @@
-{-# LANGUAGE FlexibleContexts, FlexibleInstances, UndecidableInstances #-}
+{-# LANGUAGE FlexibleContexts, FlexibleInstances, UndecidableInstances, CPP #-}
 module Memlog(MemlogOp(..), AddrOp(..), AddrEntry(..), AddrEntryType(..), AddrFlag(..), parseMemlog, associateFuncs, shouldIgnoreInst, pairListFind, InstOpList, MemlogList, Interesting) where
 
 import Control.Applicative
 import Control.Monad(liftM)
+#ifdef DEBUG
 import Control.Monad.Error
+#endif
 import Control.Monad.State
 import Control.Monad.Trans(lift)
 import Control.Monad.Trans.Maybe
@@ -124,7 +126,6 @@ class (Functor m, Monad m) => OpStream m where
 
 type OpContext = State [MemlogOp]
 type MemlogContext = StateT MemlogState OpContext
-type FuncOpContext = ErrorT String MemlogContext
 
 instance OpStream OpContext where
     getOpStream = get
@@ -134,9 +135,25 @@ instance OpStream MemlogContext where
     getOpStream = lift getOpStream
     putOpStream = lift . putOpStream
 
+#ifdef DEBUG
+type FuncOpContext = ErrorT String MemlogContext
+
 instance OpStream FuncOpContext where
     getOpStream = lift getOpStream
     putOpStream = lift . putOpStream
+
+liftFuncOp :: OpContext a -> FuncOpContext a
+liftFuncOp = lift . lift
+#else
+type FuncOpContext = MemlogContext
+
+runErrorT = liftM Right
+throwError s = fail s
+catchError c h = c
+
+liftFuncOp :: OpContext a -> FuncOpContext a
+liftFuncOp = lift
+#endif
 
 memlogPopMaybe :: OpStream m => m (Maybe MemlogOp)
 memlogPopMaybe = do
@@ -189,6 +206,7 @@ associateBasicBlock block = do
                       maybeOp <- associateInst inst `catchError` handler inst
                       appendInstOp (inst, maybeOp)
                       return (inst, maybeOp)
+          handler :: Instruction -> String -> FuncOpContext (Maybe MemlogOp)
           handler inst err = do
               ops <- getOpStream
               currentAssociated <- memlogCurrentAssociated <$> get
@@ -282,7 +300,7 @@ associateInst inst@CallInst{ callFunction = ExternalFunctionC func,
             _ -> throwError $ printf "Expected load and store operation (memcpy)"
     where name = identifierAsString $ externalFunctionName func
 associateInst CallInst{ callFunction = FunctionC func } = do
-    (eitherError, memlogState) <- lift $ lift $
+    (eitherError, memlogState) <- liftFuncOp $
         runStateT (runErrorT $ associateMemlogWithFunc func) noMemlogState
     case eitherError of
         Right () -> return ()
@@ -301,7 +319,7 @@ associateMemlogWithFunc :: Function -> FuncOpContext ()
 associateMemlogWithFunc func = addBlock $ head $ functionBody func
     where addBlock :: BasicBlock -> FuncOpContext ()
           addBlock block = do
-              ops <- lift get
+              ops <- getOpStream
               associated <- associateBasicBlock block
               appendAssociated (block, associated)
               nextBlock <- memlogNextBlock <$> get

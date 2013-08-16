@@ -136,19 +136,19 @@ main = do
     let functionLog = optLogDir options </> "llvm-functions.log"
     printf "Loading LLVM module from %s.\n" llvmMod
     theMod <- parseLLVMFile defaultParserOptions llvmMod
-    printf "Parsing execution log from %s.\n" functionLog
+    seq theMod $ printf "Parsing execution log from %s.\n" functionLog
     funcNameList <- lines <$> readFile functionLog
     let findFunc name = fromMaybe (error $ "Couldn't find function " ++ name) $ findFunctionByName theMod name
     let funcList = map findFunc funcNameList
     let interestingFuncs = interesting "main" funcList
 
     -- Align dynamic log with execution history
-    putStrLn "Loading dynamic log."
+    seq interestingFuncs $ putStrLn "Loading dynamic log."
     memlog <- parseMemlog $ optLogDir options </> "llvm-memlog.log"
-    putStr "Aligning dynamic log data..."
+    seq memlog $ putStr "Aligning dynamic log data..."
     let associated = associateFuncs memlog interestingFuncs
     let instructionCount = numInstructions associated
-    putStrLn $
+    seq associated $ putStrLn $
         printf " done.\nRunning symbolic execution analysis with %d instructions."
             instructionCount
 
@@ -159,7 +159,7 @@ main = do
     }
     let state = execState (runMaybeT $ runBlocks associated) initialState
     putStrLn ""
-    unless (null $ warnings state) $ do
+    seq state $ unless (null $ warnings state) $ do
         putStrLn "Warnings:"
         putStrLn $ L.intercalate "\n" $ map showWarning $ warnings state
 

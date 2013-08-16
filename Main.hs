@@ -8,6 +8,7 @@ import Control.Applicative
 import Control.Monad
 import Control.Monad.Reader
 import Control.Monad.State.Lazy
+import Control.Monad.Trans.Maybe
 import Data.Aeson
 import Data.Maybe
 import Data.Word
@@ -34,7 +35,6 @@ import Eval
 import Expr
 import Memlog
 import Options
-import Progress
 
 deriving instance Show Command
 deriving instance Show Response
@@ -157,8 +157,8 @@ main = do
         symbolicTotalInstructions = instructionCount,
         symbolicOptions = options
     }
-    let (result, state) = runState (runProgressT $ runBlocks associated) initialState
-    showProgress result
+    let state = execState (runMaybeT $ runBlocks associated) initialState
+    putStrLn ""
     unless (null $ warnings state) $ do
         putStrLn "Warnings:"
         putStrLn $ L.intercalate "\n" $ map showWarning $ warnings state

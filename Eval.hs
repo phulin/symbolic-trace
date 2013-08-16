@@ -17,6 +17,8 @@ import Control.Monad
 import Control.Monad.State.Lazy
 import Control.Monad.Trans.Class(lift, MonadTrans)
 import Control.Monad.Trans.Maybe
+-- For progress bar tracking
+import System.IO.Unsafe(unsafePerformIO)
 import Text.Printf(printf)
 
 import Data.RESET.Types
@@ -25,7 +27,6 @@ import Expr
 import Memlog
 import Options
 import Pretty
-import Progress
 
 data LocInfo = LocInfo{
     locExpr :: Expr,
@@ -567,24 +568,20 @@ traceInstOp (inst, Just (HelperFuncOp _))
 traceInstOp (inst, Just op) = trace $ printf "%s\n\t\t%s" (show inst) (show op)
 traceInstOp (inst, Nothing) = traceShow inst
 
-type ProgressSymb = ProgressT Float Symbolic
-instance MonadState SymbolicState ProgressSymb where
-    state = lift . state
-
-helperFuncUpdate :: (Instruction, Maybe MemlogOp) -> MaybeT ProgressSymb ()
+helperFuncUpdate :: (Instruction, Maybe MemlogOp) -> MaybeSymb ()
 helperFuncUpdate (inst@CallInst{ callArguments = argVals,
                                  callFunction = FunctionC func },
                   Just (HelperFuncOp memlog)) = do
     -- Call stack abstraction; store current function so we can restore it later
     currentFunc <- getCurrentFunction
     -- Pass arguments through
-    argExprs <- mapM (buildExprToMaybeTExpr . valueToExpr . fst) argVals
+    argExprs <- mapM (buildExprToMaybeExpr . valueToExpr . fst) argVals
     let argNames = map argumentName $ functionParameters func
     let locs = map (idLoc func) argNames
     let argLocInfos = [ noLocInfo{ locExpr = e } | e <- argExprs ]
     zipWithM locInfoInsert locs argLocInfos 
     -- Run and grab return value
-    maybeRetVal <- lift $ runBlocks memlog
+    maybeRetVal <- runBlocks memlog
     -- Understand return value
     optional $ do
         val <- maybeToM $ maybeRetVal
@@ -596,7 +593,10 @@ helperFuncUpdate (inst@CallInst{ callArguments = argVals,
     putCurrentFunction currentFunc
 helperFuncUpdate _ = fail ""
 
-countInst :: ProgressSymb ()
+progress :: Monad m => Float -> m ()
+progress f = seq (unsafePerformIO $ putStr $ printf "\r%.0f%%" $ 100 * f) $ return ()
+
+countInst :: MaybeSymb ()
 countInst = do
     insts <- symbolicInstructionsProcessed <$> get
     total <- symbolicTotalInstructions <$> get
@@ -604,18 +604,16 @@ countInst = do
         progress $ fromIntegral insts / fromIntegral total
     modify (\s -> s{ symbolicInstructionsProcessed = insts + 1 })
 
-updateInfo :: (Instruction, Maybe MemlogOp) -> ProgressSymb ()
+updateInfo :: (Instruction, Maybe MemlogOp) -> MaybeSymb ()
 updateInfo instOp@(inst, _) = do
     currentIP <- getCurrentIP
     whenDebugIP $ traceInstOp instOp $ return ()
     countInst
     skip <- getSkipRest
-    unless skip $ void $ runMaybeT $ helperFuncUpdate instOp <|>
-        (liftP $ foldl1 (<||>) infoUpdaters instOp)
-    where liftP :: MaybeSymb a -> MaybeT ProgressSymb a
-          liftP msx = MaybeT $ ProgressT $ ProgressLift <$> runMaybeT msx
+    unless skip $ void $ helperFuncUpdate instOp <|>
+        (foldl1 (<||>) infoUpdaters instOp)
 
-runBlock :: (BasicBlock, InstOpList) -> ProgressSymb (Maybe Expr)
+runBlock :: (BasicBlock, InstOpList) -> MaybeSymb (Maybe Expr)
 runBlock (block, instOpList) = do
     putCurrentFunction $ basicBlockFunction block 
     putRetVal Nothing
@@ -637,7 +635,7 @@ numBlockInstructions ((_, Just (HelperFuncOp memlog)) : xs)
 numBlockInstructions (x : xs) = 1 + numBlockInstructions xs
 numBlockInstructions [] = 0
 
-runBlocks :: MemlogList -> ProgressSymb (Maybe Expr)
+runBlocks :: MemlogList -> MaybeSymb (Maybe Expr)
 runBlocks blocks = do
     retVals <- mapM runBlock blocks
     return $ last retVals

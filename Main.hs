@@ -143,7 +143,7 @@ main = do
 
     -- Align dynamic log with execution history
     seq interestingFuncs $ putStrLn "Loading dynamic log."
-    memlog <- parseMemlog
+    memlog <- parseMemlog $ optLogDir options </> "llvm-memlog.log"
     seq memlog $ putStr "Aligning dynamic log data..."
     let associated = associateFuncs memlog interestingFuncs
     let instructionCount = numInstructions associated

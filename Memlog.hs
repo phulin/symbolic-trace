@@ -51,8 +51,8 @@ instance Pretty AddrEntry where
         _ -> "Reg" ++ show reg
     pretty addr = show addr
 
-parseMemlog :: IO [MemlogOp]
-parseMemlog = runGet (many getMemlogEntry) <$> GZ.decompress <$> B.readFile "/tmp/llvm-memlog.log"
+parseMemlog :: FilePath -> IO [MemlogOp]
+parseMemlog file = runGet (many getMemlogEntry) <$> GZ.decompress <$> B.readFile file
 
 getMemlogEntry :: Get MemlogOp
 getMemlogEntry = do

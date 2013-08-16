@@ -29,6 +29,7 @@ import qualified Data.List as L
 import qualified Data.Map as M
 import qualified Data.Map.Strict as MS
 import qualified Data.Text as T
+import qualified Data.Text.IO as TIO
 
 import Data.RESET.Types
 import Eval
@@ -41,9 +42,9 @@ deriving instance Show Response
 
 type SymbReader = ReaderT SymbolicState IO
 
-interesting :: String -> [Function] -> Interesting
+interesting :: T.Text -> [Function] -> Interesting
 interesting focus fs = (before, reverse revOurs, reverse revAfter)
-    where boring = not . L.isInfixOf focus . identifierAsString . functionName
+    where boring = not . T.isInfixOf focus . identifierContent . functionName
           (before, afterFirst) = span boring fs
           revAfterFirst = reverse afterFirst
           (revAfter, revOurs) = span boring revAfterFirst
@@ -137,10 +138,14 @@ main = do
     printf "Loading LLVM module from %s.\n" llvmMod
     theMod <- parseLLVMFile defaultParserOptions llvmMod
     seq theMod $ printf "Parsing execution log from %s.\n" functionLog
-    funcNameList <- lines <$> readFile functionLog
-    let findFunc name = fromMaybe (error $ "Couldn't find function " ++ name) $ findFunctionByName theMod name
-    let funcList = map findFunc funcNameList
-    let interestingFuncs = interesting "main" funcList
+    funcNameList <- T.lines <$> TIO.readFile functionLog
+    let funcMap = MS.fromList $
+            map (\f -> (identifierContent $ functionName f, f)) $
+                moduleDefinedFunctions theMod
+        findFunc :: T.Text -> Function
+        findFunc name = fromMaybe (error $ "Couldn't find function " ++ T.unpack name) $ MS.lookup name funcMap
+        funcList = map findFunc funcNameList
+        interestingFuncs = interesting "main" funcList
 
     -- Align dynamic log with execution history
     seq interestingFuncs $ putStrLn "Loading dynamic log."
@@ -158,8 +163,8 @@ main = do
         symbolicOptions = options
     }
     let state = execState (runMaybeT $ runBlocks associated) initialState
-    putStrLn ""
-    seq state $ unless (null $ warnings state) $ do
+    seq state $ putStrLn ""
+    unless (null $ warnings state) $ do
         putStrLn "Warnings:"
         putStrLn $ L.intercalate "\n" $ map showWarning $ warnings state
 

@@ -302,10 +302,10 @@ associateMemlogWithFunc func = addBlock $ head $ functionBody func
                   Just nextBlock' -> addBlock nextBlock'
                   Nothing -> return ()
 
-type Interesting = ([Function], [Function], [Function])
+type Interesting = ([Function], [Function])
 
 associateFuncs :: [MemlogOp] -> Interesting -> MemlogList
-associateFuncs ops (before, middle, _) = unAppList revMemlog
+associateFuncs ops (before, middle) = unAppList revMemlog
     where revMemlog = fromMaybe (error "No memlog list") maybeRevMemlog
           maybeRevMemlog = memlogAssociatedBlocks $ middleM
           beforeM = execState (associate before)

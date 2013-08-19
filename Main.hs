@@ -44,11 +44,8 @@ deriving instance Show Response
 type SymbReader = ReaderT SymbolicState IO
 
 interesting :: T.Text -> [Function] -> Interesting
-interesting focus fs = (before, reverse revOurs, reverse revAfter)
+interesting focus fs = span boring fs
     where boring = not . T.isInfixOf focus . identifierContent . functionName
-          (before, afterFirst) = span boring fs
-          revAfterFirst = reverse afterFirst
-          (revAfter, revOurs) = span boring revAfterFirst
 
 processCmd :: SymbolicState -> String -> IO Response
 processCmd state s = case parseCmd s of

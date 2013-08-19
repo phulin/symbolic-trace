@@ -21,22 +21,12 @@ import qualified Data.ByteString.Lazy as B
 import qualified Data.List as L
 import qualified Data.Map as M
 import qualified Data.Set as S
+import qualified Data.Text as T
 
 import Data.RESET.Types
 import AppList
 import Instances
 import Pretty
-
--- Haskell version of C dynamic log structs
-data MemlogOp = AddrMemlogOp AddrOp AddrEntry |
-                BranchOp Word32 |
-                SelectOp Word32 |
-                SwitchOp Word32 | 
-                ExceptionOp |
-                HelperFuncOp MemlogList | -- For calls out to helper functions
-                MemsetOp AddrEntry |
-                MemcpyOp AddrEntry AddrEntry
-    deriving (Eq, Ord, Show)
 
 instance Pretty AddrEntry where
     pretty AddrEntry{ addrType = MAddr, addrVal = val }
@@ -92,8 +82,6 @@ getAddrFlag = do
         3 -> FuncargFlag
         f -> error ("Parse error in dynamic log: Unexpected flag " ++ show f)
 
-type InstOpList = [(Instruction, Maybe MemlogOp)]
-type MemlogList = [(BasicBlock, InstOpList)]
 type MemlogAppList = AppList (BasicBlock, InstOpList)
 
 -- Monads for doing the association.

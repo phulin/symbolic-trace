@@ -5,6 +5,7 @@ import Data.LLVM.Types
 import LLVM.Parse
 
 import Control.Applicative
+import Control.DeepSeq
 import Control.Monad
 import Control.Monad.Reader
 import Control.Monad.State.Lazy

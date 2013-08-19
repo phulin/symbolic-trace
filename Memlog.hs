@@ -9,7 +9,7 @@ import Control.Monad.Error
 import Control.Monad.State
 import Control.Monad.Trans(lift)
 import Control.Monad.Trans.Maybe
-import Data.Binary.Get(Get, runGet, getWord32host, getWord64host, skip)
+import Data.Binary.Get(Get, runGet, getWord32host, getWord64host, skip, getLazyByteString)
 import Data.LLVM.Types
 import Data.Maybe(isJust, fromMaybe, catMaybes)
 import Data.Word(Word32, Word64)
@@ -54,8 +54,10 @@ getMemlogEntry = do
         1 -> BranchOp <$> getWord32host <* skip 28
         2 -> SelectOp <$> getWord32host <* skip 28
         3 -> SwitchOp <$> getWord32host <* skip 28
-        4 -> ExceptionOp <$ skip 28
-        _ -> error "Unknown entry type"
+        4 -> ExceptionOp <$ skip 32
+        _ -> do
+            nextBytes <- getLazyByteString 32
+            error $ printf "Unknown entry type %d; next bytes %s" entryType (show nextBytes)
     return out
 
 getBool :: Get Bool

@@ -57,8 +57,8 @@ data SymbolicState = SymbolicState {
         symbolicMessagesByIP :: MS.Map Word64 (AppList (Message Expr)),
         symbolicSkipRest :: Bool,
         symbolicRetVal :: Maybe Expr,
-        symbolicTotalInstructions :: Int,
-        symbolicInstructionsProcessed :: Int,
+        symbolicTotalFuncs :: Int,
+        symbolicFuncsProcessed :: Int,
         symbolicOptions :: Options
     } deriving Show
 
@@ -198,8 +198,8 @@ noSymbolicState = SymbolicState{
     symbolicMessagesByIP = M.empty,
     symbolicSkipRest = False,
     symbolicRetVal = Nothing,
-    symbolicTotalInstructions = error "Need total instr count.",
-    symbolicInstructionsProcessed = 0,
+    symbolicTotalFuncs = error "Need total instr count.",
+    symbolicFuncsProcessed = 0,
     symbolicOptions = defaultOptions
 }
 
@@ -597,19 +597,18 @@ helperFuncUpdate _ = fail ""
 progress :: Monad m => Float -> m ()
 progress f = seq (unsafePerformIO $ putStr $ printf "\r%.0f%%" $ 100 * f) $ return ()
 
-countInst :: MaybeSymb ()
-countInst = do
-    insts <- symbolicInstructionsProcessed <$> get
-    total <- symbolicTotalInstructions <$> get
-    when (insts `rem` (total `quot` 100) == 0) $ 
-        progress $ fromIntegral insts / fromIntegral total
-    modify (\s -> s{ symbolicInstructionsProcessed = insts + 1 })
+countFunction :: MaybeSymb ()
+countFunction = do
+    funcs <- symbolicFuncsProcessed <$> get
+    total <- symbolicTotalFuncs <$> get
+    when (funcs `rem` (total `quot` 100) == 0) $ 
+        progress $ fromIntegral funcs / fromIntegral total
+    modify (\s -> s{ symbolicFuncsProcessed = funcs + 1 })
 
 updateInfo :: (Instruction, Maybe MemlogOp) -> MaybeSymb ()
 updateInfo instOp@(inst, _) = do
     currentIP <- getCurrentIP
     whenDebugIP $ traceInstOp instOp $ return ()
-    countInst
     skip <- getSkipRest
     unless skip $ void $ helperFuncUpdate instOp <|>
         (foldl1 (<||>) infoUpdaters instOp)
@@ -617,6 +616,8 @@ updateInfo instOp@(inst, _) = do
 runBlock :: (BasicBlock, InstOpList) -> MaybeSymb (Maybe Expr)
 runBlock (block, instOpList) = do
     putCurrentFunction $ basicBlockFunction block 
+    when (identifierContent (basicBlockName block) == T.pack "entry")
+        countFunction
     putRetVal Nothing
     clearSkipRest
     mapM updateInfo instOpList
@@ -626,15 +627,6 @@ runBlock (block, instOpList) = do
 isMemLoc :: Loc -> Bool
 isMemLoc MemLoc{} = True
 isMemLoc _ = False
-
-numInstructions :: MemlogList -> Int
-numInstructions = sum . map (numBlockInstructions . snd)
-
-numBlockInstructions :: InstOpList -> Int
-numBlockInstructions ((_, Just (HelperFuncOp memlog)) : xs)
-    = 1 + numInstructions memlog + numBlockInstructions xs
-numBlockInstructions (x : xs) = 1 + numBlockInstructions xs
-numBlockInstructions [] = 0
 
 runBlocks :: MemlogList -> MaybeSymb (Maybe Expr)
 runBlocks blocks = do

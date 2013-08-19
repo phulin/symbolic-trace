@@ -142,24 +142,23 @@ main = do
     let funcMap = MS.fromList $
             map (\f -> (identifierContent $ functionName f, f)) $
                 moduleDefinedFunctions theMod
-        findFunc :: T.Text -> Function
         findFunc name = fromMaybe (error $ "Couldn't find function " ++ T.unpack name) $ MS.lookup name funcMap
         funcList = map findFunc funcNameList
         interestingFuncs = interesting "main" funcList
+        funcCount = length $ snd interestingFuncs
 
     -- Align dynamic log with execution history
     seq interestingFuncs $ putStrLn "Loading dynamic log."
     memlog <- parseMemlog $ optLogDir options </> "llvm-memlog.log"
     seq memlog $ putStr "Aligning dynamic log data..."
     let associated = associateFuncs memlog interestingFuncs
-    let instructionCount = numInstructions associated
-    seq associated $ putStrLn $
-        printf " done.\nRunning symbolic execution analysis with %d instructions."
-            instructionCount
+    putStrLn $
+        printf " done.\nRunning symbolic execution analysis with %d functions."
+            funcCount
 
     -- Run symbolic execution analysis
     let initialState = noSymbolicState{
-        symbolicTotalInstructions = instructionCount,
+        symbolicTotalFuncs = funcCount,
         symbolicOptions = options
     }
     let state = execState (runMaybeT $ runBlocks associated) initialState

@@ -1,13 +1,14 @@
 {-# LANGUAGE FlexibleInstances, FlexibleContexts, UndecidableInstances, MultiParamTypeClasses, StandaloneDeriving #-}
 -- Symbolic evaluator for basic blocks
 
-module Eval(Symbolic(..), SymbolicState(..), noSymbolicState, runBlocks, messages, messagesByIP, warnings, showWarning, numInstructions) where
+module Eval(Symbolic(..), SymbolicState(..), noSymbolicState, runBlocks, messages, messagesByIP, warnings, showWarning) where
 
 import Data.LLVM.Types
 import qualified Data.List as L
 import qualified Data.Map as M
 import qualified Data.Map.Strict as MS
 import qualified Data.Set as S
+import qualified Data.Text as T
 import qualified Data.Bits as Bits
 import Data.Word
 import Data.Maybe
@@ -485,7 +486,7 @@ exprUpdate instOp@(inst, _) = do
 ignoreUpdate :: (Instruction, Maybe MemlogOp) -> MaybeSymb ()
 ignoreUpdate (AllocaInst{}, _) = return ()
 ignoreUpdate (CallInst{ callFunction = ExternalFunctionC func}, _)
-    | (identifierAsString $ externalFunctionName func) == "log_dynval" = return ()
+    | (identifierContent $ externalFunctionName func) == T.pack "log_dynval" = return ()
 ignoreUpdate _ = fail ""
 
 warnInstOp :: Symbolicish m => (Instruction, Maybe MemlogOp) -> m ()
@@ -514,7 +515,7 @@ controlFlowUpdate (CallInst{ callFunction = ExternalFunctionC func,
                              callAttrs = attrs }, _)
     | FANoReturn `elem` externalFunctionAttrs func = skipRest
     | FANoReturn `elem` attrs = skipRest
-    | "cpu_loop_exit" == identifierAsString (externalFunctionName func)
+    | T.pack "cpu_loop_exit" == identifierContent (externalFunctionName func)
         = skipRest
 controlFlowUpdate (inst@UnreachableInst{}, _) = warning "UNREACHABLE INSTRUCTION!"
 controlFlowUpdate _ = fail ""

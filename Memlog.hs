@@ -208,7 +208,7 @@ associateBasicBlock block = do
 shouldIgnoreInst :: Instruction -> Bool
 shouldIgnoreInst AllocaInst{} = True
 shouldIgnoreInst CallInst{ callFunction = ExternalFunctionC func}
-    | (identifierAsString $ externalFunctionName func) == "log_dynval" = True
+    | (identifierContent $ externalFunctionName func) == T.pack "log_dynval" = True
 shouldIgnoreInst StoreInst{ storeIsVolatile = True } = True
 shouldIgnoreInst inst = False
 
@@ -269,20 +269,20 @@ associateInst inst@CallInst{ callFunction = ExternalFunctionC func,
                              callAttrs = attrs }
     | FANoReturn `elem` externalFunctionAttrs func = skipRest >> return Nothing
     | FANoReturn `elem` attrs = skipRest >> return Nothing
-    | "cpu_loop_exit" == name = skipRest >> return Nothing
-    | "llvm.memset." `L.isPrefixOf` name = do
+    | T.pack "cpu_loop_exit" == name = skipRest >> return Nothing
+    | T.pack "llvm.memset." `T.isPrefixOf` name = do
         op <- memlogPopErr inst
         case op of
             AddrMemlogOp StoreOp addr -> return $ Just $ MemsetOp addr
             _ -> throwError $ printf "Expected store operation (memset)"
-    | "llvm.memcpy." `L.isPrefixOf` name = do
+    | T.pack "llvm.memcpy." `T.isPrefixOf` name = do
         op1 <- memlogPopErr inst
         op2 <- memlogPopErr inst
         case (op1, op2) of
             (AddrMemlogOp LoadOp src, AddrMemlogOp StoreOp dest) ->
                 return $ Just $ MemcpyOp src dest
             _ -> throwError $ printf "Expected load and store operation (memcpy)"
-    where name = identifierAsString $ externalFunctionName func
+    where name = identifierContent $ externalFunctionName func
 associateInst CallInst{ callFunction = FunctionC func } = do
     opStream <- getOpStream
     let (eitherError, memlogState)

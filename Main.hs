@@ -43,10 +43,6 @@ deriving instance Show Response
 
 type SymbReader = ReaderT SymbolicState IO
 
-interesting :: T.Text -> [Function] -> Interesting
-interesting focus fs = span boring fs
-    where boring = not . T.isInfixOf focus . identifierContent . functionName
-
 processCmd :: SymbolicState -> String -> IO Response
 processCmd state s = case parseCmd s of
     Left err -> do
@@ -130,6 +126,9 @@ main = do
             nonOptions
         Nothing -> return ()
 
+    -- The goal here is to postpone all computation as much as possible, so
+    -- that everything is captured by the progress meter in the main execState.
+
     -- Load LLVM files and dynamic logs
     let llvmMod = optLogDir options </> "llvm-mod.bc"
     let functionLog = optLogDir options </> "llvm-functions.log"
@@ -142,14 +141,13 @@ main = do
                 moduleDefinedFunctions theMod
         findFunc name = fromMaybe (error $ "Couldn't find function " ++ T.unpack name) $ MS.lookup name funcMap
         funcList = map findFunc funcNameList
-        interestingFuncs = interesting "main" funcList
-        funcCount = length $ snd interestingFuncs
+        funcCount = length $ funcNameList
 
     -- Align dynamic log with execution history
-    seq interestingFuncs $ putStrLn "Loading dynamic log."
+    putStrLn "Loading dynamic log."
     memlog <- parseMemlog $ optLogDir options </> "llvm-memlog.log"
     putStr "Aligning dynamic log data..."
-    let associated = associateFuncs memlog interestingFuncs
+    let associated = associateFuncs memlog funcList
     putStrLn $
         printf " done.\nRunning symbolic execution analysis with %d functions."
             funcCount

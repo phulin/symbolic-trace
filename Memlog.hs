@@ -1,5 +1,5 @@
 {-# LANGUAGE FlexibleContexts, FlexibleInstances, UndecidableInstances, CPP #-}
-module Memlog(MemlogOp(..), AddrOp(..), AddrEntry(..), AddrEntryType(..), AddrFlag(..), parseMemlog, associateFuncs, shouldIgnoreInst, pairListFind, InstOpList, MemlogList, Interesting) where
+module Memlog(MemlogOp(..), AddrOp(..), AddrEntry(..), AddrEntryType(..), AddrFlag(..), parseMemlog, associateFuncs, shouldIgnoreInst, pairListFind, InstOpList, MemlogList) where
 
 import Control.Applicative
 import Control.Monad(liftM)
@@ -304,16 +304,11 @@ associateMemlogWithFunc func = addBlock $ head $ functionBody func
                   Just nextBlock' -> addBlock nextBlock'
                   Nothing -> return ()
 
-type Interesting = ([Function], [Function])
-
-associateFuncs :: [MemlogOp] -> Interesting -> MemlogList
-associateFuncs ops (before, middle) = unAppList revMemlog
+associateFuncs :: [MemlogOp] -> [Function] -> MemlogList
+associateFuncs ops funcs = unAppList revMemlog
     where revMemlog = fromMaybe (error "No memlog list") maybeRevMemlog
-          maybeRevMemlog = memlogAssociatedBlocks $ middleM
-          beforeM = execState (associate before)
-              noMemlogState{ memlogOpStream = ops }
-          middleM = execState (associate middle)
-              noMemlogState{ memlogOpStream = memlogOpStream beforeM }
+          maybeRevMemlog = memlogAssociatedBlocks $
+              execState (associate funcs) $ noMemlogState{ memlogOpStream = ops }
           associate funcs = do
               result <- runErrorT $ mapM_ associateMemlogWithFunc funcs
               case result of

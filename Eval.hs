@@ -286,7 +286,7 @@ valueToExpr (ConstantC UndefValue{}) = return UndefinedExpr
 valueToExpr (ConstantC (ConstantFP _ _ value)) = return $ FLitExpr value 
 valueToExpr (ConstantC (ConstantInt _ _ value)) = return $ ILitExpr value
 valueToExpr (ConstantC (ConstantValue{ constantInstruction = inst }))
-    = foldl1 (<||>) instToExprs inst
+    = instToExpr (inst, Nothing)
 valueToExpr (InstructionC inst) = do
     name <- case instructionName inst of
         Just n -> return n
@@ -301,6 +301,10 @@ valueToExpr (GlobalVariableC GlobalVariable{ globalVariableName = name,
                                              globalVariableType = varType }) = do
     func <- getCurrentFunction
     return $ InputExpr (typeToExprT varType) (idLoc func name)
+valueToExpr (ExternalValueC ExternalValue{ externalValueName = name,
+                                           externalValueType = valType }) = do
+    func <- getCurrentFunction
+    return $ InputExpr (typeToExprT valType) (idLoc func name)
 valueToExpr val = warning ("Couldn't find expr for " ++ show val) >> fail ""
 
 maybeValueToExpr :: Value -> MaybeSymb Expr
@@ -313,48 +317,6 @@ lookupValue val = do
         InputExpr _ loc' -> return loc'
         _ -> fail ""
     valueAt loc
-
-binaryInstToExprConstructor :: Instruction -> BuildExpr (ExprT -> Expr -> Expr -> Expr)
-binaryInstToExprConstructor AddInst{} = return AddExpr
-binaryInstToExprConstructor SubInst{} = return SubExpr
-binaryInstToExprConstructor MulInst{} = return MulExpr
-binaryInstToExprConstructor DivInst{} = return DivExpr
-binaryInstToExprConstructor RemInst{} = return RemExpr
-binaryInstToExprConstructor ShlInst{} = return ShlExpr
-binaryInstToExprConstructor LshrInst{} = return LshrExpr
-binaryInstToExprConstructor AshrInst{} = return AshrExpr
-binaryInstToExprConstructor AndInst{} = return AndExpr
-binaryInstToExprConstructor OrInst{} = return OrExpr
-binaryInstToExprConstructor XorInst{} = return XorExpr
-binaryInstToExprConstructor _ = fail ""
-
-binaryInstToExpr :: Instruction -> BuildExpr Expr
-binaryInstToExpr inst = do
-    exprConstructor <- binaryInstToExprConstructor inst
-    lhs <- valueToExpr $ binaryLhs inst
-    rhs <- valueToExpr $ binaryRhs inst
-    return $ exprConstructor (exprTOfInst inst) lhs rhs
-
-castInstToExprConstructor :: Instruction -> BuildExpr (ExprT -> Expr -> Expr)
-castInstToExprConstructor TruncInst{} = return TruncExpr
-castInstToExprConstructor ZExtInst{} = return ZExtExpr
-castInstToExprConstructor SExtInst{} = return SExtExpr
-castInstToExprConstructor FPTruncInst{} = return FPTruncExpr
-castInstToExprConstructor FPExtInst{} = return FPExtExpr
-castInstToExprConstructor FPToSIInst{} = return FPToSIExpr
-castInstToExprConstructor FPToUIInst{} = return FPToUIExpr
-castInstToExprConstructor SIToFPInst{} = return SIToFPExpr
-castInstToExprConstructor UIToFPInst{} = return UIToFPExpr
-castInstToExprConstructor PtrToIntInst{} = return PtrToIntExpr
-castInstToExprConstructor IntToPtrInst{} = return IntToPtrExpr
-castInstToExprConstructor BitcastInst{} = return BitcastExpr
-castInstToExprConstructor _ = fail ""
-
-castInstToExpr :: Instruction -> BuildExpr Expr
-castInstToExpr inst = do
-    exprConstructor <- castInstToExprConstructor inst
-    value <- valueToExpr $ castedValue inst
-    return $ exprConstructor (exprTOfInst inst) value
 
 -- Decide whether or not to tell the user about a load or a store.
 interestingOp :: Expr -> AddrEntry -> Bool
@@ -382,20 +344,51 @@ modifyAt :: Int -> a -> [a] -> [a]
 modifyAt 0 v (_ : xs) = v : xs
 modifyAt n v (x : xs) = x : modifyAt (n - 1) v xs
 
-otherInstToExpr :: Instruction -> BuildExpr Expr
-otherInstToExpr PhiNode{ phiIncomingValues = valList } = do
+binaryInstToExpr :: (ExprT -> Expr -> Expr -> Expr) -> Instruction -> BuildExpr Expr
+binaryInstToExpr constructor inst = constructor (exprTOfInst inst)
+    <$> valueToExpr (binaryLhs inst) <*> valueToExpr (binaryRhs inst)
+
+castInstToExpr :: (ExprT -> Expr -> Expr) -> Instruction -> BuildExpr Expr
+castInstToExpr constructor inst
+    = constructor (exprTOfInst inst) <$> valueToExpr (castedValue inst)
+
+instToExpr :: (Instruction, Maybe MemlogOp) -> BuildExpr Expr
+instToExpr (inst@AddInst{}, _) = binaryInstToExpr AddExpr inst
+instToExpr (inst@SubInst{}, _) = binaryInstToExpr SubExpr inst
+instToExpr (inst@MulInst{}, _) = binaryInstToExpr MulExpr inst
+instToExpr (inst@DivInst{}, _) = binaryInstToExpr DivExpr inst
+instToExpr (inst@RemInst{}, _) = binaryInstToExpr RemExpr inst
+instToExpr (inst@ShlInst{}, _) = binaryInstToExpr ShlExpr inst
+instToExpr (inst@LshrInst{}, _) = binaryInstToExpr LshrExpr inst
+instToExpr (inst@AshrInst{}, _) = binaryInstToExpr AshrExpr inst
+instToExpr (inst@AndInst{}, _) = binaryInstToExpr AndExpr inst
+instToExpr (inst@OrInst{}, _) = binaryInstToExpr OrExpr inst
+instToExpr (inst@XorInst{}, _) = binaryInstToExpr XorExpr inst
+instToExpr (inst@TruncInst{}, _) = castInstToExpr TruncExpr inst
+instToExpr (inst@ZExtInst{}, _) = castInstToExpr ZExtExpr inst
+instToExpr (inst@SExtInst{}, _) = castInstToExpr SExtExpr inst
+instToExpr (inst@FPTruncInst{}, _) = castInstToExpr FPTruncExpr inst
+instToExpr (inst@FPExtInst{}, _) = castInstToExpr FPExtExpr inst
+instToExpr (inst@FPToSIInst{}, _) = castInstToExpr FPToSIExpr inst
+instToExpr (inst@FPToUIInst{}, _) = castInstToExpr FPToUIExpr inst
+instToExpr (inst@SIToFPInst{}, _) = castInstToExpr SIToFPExpr inst
+instToExpr (inst@UIToFPInst{}, _) = castInstToExpr UIToFPExpr inst
+instToExpr (inst@PtrToIntInst{}, _) = castInstToExpr PtrToIntExpr inst
+instToExpr (inst@IntToPtrInst{}, _) = castInstToExpr IntToPtrExpr inst
+instToExpr (inst@BitcastInst{}, _) = castInstToExpr BitcastExpr inst
+instToExpr (PhiNode{ phiIncomingValues = valList }, _) = do
     maybePrevBlock <- getPreviousBlock
     let prevBlock = fromMaybe (error "No previous block!") maybePrevBlock
     valueToExpr $ findIncomingValue prevBlock valList
-otherInstToExpr GetElementPtrInst{} = return GEPExpr
-otherInstToExpr inst@CallInst{ callFunction = ExternalFunctionC func,
-                               callArguments = argValuePairs }
+instToExpr (GetElementPtrInst{}, _) = return GEPExpr
+instToExpr (inst@CallInst{ callFunction = ExternalFunctionC func,
+                           callArguments = argValuePairs }, _)
     | externalIsIntrinsic func = do
         args <- mapM valueToExpr $ map fst argValuePairs
         return $ IntrinsicExpr (exprTOfInst inst) func args
-otherInstToExpr inst@InsertValueInst{ insertValueAggregate = aggr,
-                                      insertValueValue = val,
-                                      insertValueIndices = [idx] } = do
+instToExpr (inst@InsertValueInst{ insertValueAggregate = aggr,
+                                  insertValueValue = val,
+                                  insertValueIndices = [idx] }, _) = do
     aggrExpr <- valueToExpr aggr
     insertExpr <- valueToExpr val
     let typ = exprTOfInst inst
@@ -406,36 +399,18 @@ otherInstToExpr inst@InsertValueInst{ insertValueAggregate = aggr,
             _ -> warning "Bad result type!" >> fail ""
         StructExpr t es -> return $ StructExpr t $ modifyAt idx insertExpr es
         _ -> warning (printf "Unrecognized expr at inst '%s'" (show inst)) >> fail ""
-otherInstToExpr inst@ExtractValueInst{ extractValueAggregate = aggr,
-                                         extractValueIndices = [idx] } = do
+instToExpr (inst@ExtractValueInst{ extractValueAggregate = aggr,
+                                   extractValueIndices = [idx] }, _) = do
     aggrExpr <- valueToExpr aggr
     return $ ExtractExpr (exprTOfInst inst) idx aggrExpr
-otherInstToExpr inst@ICmpInst{ cmpPredicate = pred,
-                              cmpV1 = val1,
-                              cmpV2 = val2 } = do
+instToExpr (inst@ICmpInst{ cmpPredicate = pred,
+                           cmpV1 = val1,
+                           cmpV2 = val2 }, _) = do
     expr1 <- valueToExpr val1
     expr2 <- valueToExpr val2
     return $ ICmpExpr pred expr1 expr2
-otherInstToExpr _ = fail ""
-
-(<||>) :: Alternative f => (a -> f b) -> (a -> f b) -> a -> f b
-(<||>) f1 f2 a = f1 a <|> f2 a
-
--- List of ways to process instructions and order in which to try them.
--- Each one converts an instruction into the expression which is the
--- instruction's output.
-instToExprs :: [Instruction -> BuildExpr Expr]
-instToExprs = [ binaryInstToExpr,
-                castInstToExpr,
-                otherInstToExpr ]
-
-deIntToPtr :: Expr -> Expr
-deIntToPtr (IntToPtrExpr _ e) = e
-deIntToPtr e = e
-
-memInstToExpr :: (Instruction, Maybe MemlogOp) -> BuildExpr Expr
-memInstToExpr (inst@LoadInst{ loadAddress = addrValue },
-               Just (AddrMemlogOp LoadOp addrEntry)) = do
+instToExpr (inst@LoadInst{ loadAddress = addrValue },
+            Just (AddrMemlogOp LoadOp addrEntry)) = do
     info <- getInfo
     let typ = exprTOfInst inst
     expr <- (locExpr <$> maybeToM (M.lookup (MemLoc addrEntry) info)) <|>
@@ -445,18 +420,34 @@ memInstToExpr (inst@LoadInst{ loadAddress = addrValue },
     when (interestingOp expr addrEntry) $
         message $ MemoryMessage LoadOp (pretty addrEntry) expr origin
     return expr
-memInstToExpr (inst@SelectInst{ selectTrueValue = trueVal,
-                                   selectFalseValue = falseVal },
-                  Just (SelectOp selection))
+instToExpr (inst@SelectInst{ selectTrueValue = trueVal,
+                             selectFalseValue = falseVal },
+            Just (SelectOp selection))
     = valueToExpr $ if selection == 0 then trueVal else falseVal
-memInstToExpr _ = fail ""
+instToExpr _ = fail ""
+
+(<||>) :: Alternative f => (a -> f b) -> (a -> f b) -> a -> f b
+(<||>) f1 f2 a = f1 a <|> f2 a
+deIntToPtr :: Expr -> Expr
+deIntToPtr (IntToPtrExpr _ e) = e
+deIntToPtr e = e
 
 -- For info updates that might fail, with the intention of no change
 -- if the monad comes back Nothing.
 type MaybeSymb = MaybeT (Symbolic)
 
-storeUpdate :: (Instruction, Maybe MemlogOp) -> MaybeSymb ()
-storeUpdate (inst@StoreInst{ storeIsVolatile = False,
+exprUpdate :: (Instruction, Maybe MemlogOp) -> MaybeSymb ()
+exprUpdate instOp@(inst, _) = do
+    id <- maybeToM $ instructionName inst
+    func <- getCurrentFunction
+    expr <- buildExprToMaybeExpr $ instToExpr instOp
+    exprInsert (idLoc func id) expr
+
+otherUpdate :: (Instruction, Maybe MemlogOp) -> MaybeSymb ()
+otherUpdate (AllocaInst{}, _) = return ()
+otherUpdate (CallInst{ callFunction = ExternalFunctionC func}, _)
+    | (identifierContent $ externalFunctionName func) == T.pack "log_dynval" = return ()
+otherUpdate (inst@StoreInst{ storeIsVolatile = False,
                              storeValue = val,
                              storeAddress = addrValue },
              (Just (AddrMemlogOp StoreOp addr))) = do
@@ -467,66 +458,36 @@ storeUpdate (inst@StoreInst{ storeIsVolatile = False,
     exprInsert (MemLoc addr) value
 -- This will trigger twice with each IP update, but that's okay because the
 -- second one is the one we want.
-storeUpdate (StoreInst{ storeIsVolatile = True,
+otherUpdate (StoreInst{ storeIsVolatile = True,
                         storeValue = val }, _) = do
     ip <- case valueContent val of
         ConstantC (ConstantInt{ constantIntValue = ipVal }) -> return ipVal
         _ -> warning "Failed to update IP" >> fail ""
     putCurrentIP $ Just $ fromIntegral $ ip
-storeUpdate _ = fail ""
-
-exprUpdate :: (Instruction, Maybe MemlogOp) -> MaybeSymb ()
-exprUpdate instOp@(inst, _) = do
-    id <- maybeToM $ instructionName inst
-    func <- getCurrentFunction
-    let builtExpr = foldl1 (<||>) instToExprs inst <|> memInstToExpr instOp
-    expr <- buildExprToMaybeExpr builtExpr
-    exprInsert (idLoc func id) expr
-
-ignoreUpdate :: (Instruction, Maybe MemlogOp) -> MaybeSymb ()
-ignoreUpdate (AllocaInst{}, _) = return ()
-ignoreUpdate (CallInst{ callFunction = ExternalFunctionC func}, _)
-    | (identifierContent $ externalFunctionName func) == T.pack "log_dynval" = return ()
-ignoreUpdate _ = fail ""
-
-warnInstOp :: Symbolicish m => (Instruction, Maybe MemlogOp) -> m ()
-warnInstOp (inst, op)
-    = warning $ printf "Couldn't process inst '%s' with op %s"
-        (show inst) (show op)
-
-failedUpdate :: (Instruction, Maybe MemlogOp) -> MaybeSymb ()
-failedUpdate instOp = warnInstOp instOp >> fail ""
-
-controlFlowUpdate :: (Instruction, Maybe MemlogOp) -> MaybeSymb ()
-controlFlowUpdate (RetInst{ retInstValue = Just val }, _) = do
+otherUpdate (RetInst{ retInstValue = Just val }, _) = do
     expr <- maybeValueToExpr val
     putRetVal $ Just expr
-controlFlowUpdate (RetInst{}, _) = return ()
-controlFlowUpdate (UnconditionalBranchInst{}, _)
+otherUpdate (RetInst{}, _) = return ()
+otherUpdate (UnconditionalBranchInst{}, _)
     = message UnconditionalBranchMessage
-controlFlowUpdate (BranchInst{ branchTrueTarget = trueTarget,
-                               branchFalseTarget = falseTarget,
-                               branchCondition = cond },
-                   Just (BranchOp idx)) = void $ optional $ do
+otherUpdate (BranchInst{ branchTrueTarget = trueTarget,
+                         branchFalseTarget = falseTarget,
+                         branchCondition = cond },
+             Just (BranchOp idx)) = void $ optional $ do
     condExpr <- maybeValueToExpr cond
     message $ BranchMessage condExpr (idx == 0)
-controlFlowUpdate (SwitchInst{}, _) = return ()
-controlFlowUpdate (CallInst{ callFunction = ExternalFunctionC func,
-                             callAttrs = attrs }, _)
+otherUpdate (SwitchInst{}, _) = return ()
+otherUpdate (CallInst{ callFunction = ExternalFunctionC func,
+                       callAttrs = attrs }, _)
     | FANoReturn `elem` externalFunctionAttrs func = skipRest
     | FANoReturn `elem` attrs = skipRest
     | T.pack "cpu_loop_exit" == identifierContent (externalFunctionName func)
         = skipRest
-controlFlowUpdate (inst@UnreachableInst{}, _) = warning "UNREACHABLE INSTRUCTION!"
-controlFlowUpdate _ = fail ""
-
 -- FIXME: Implement a more reasonable model for "real" memcpy/memset
 -- (i.e. those that are for arrays, not structs)
-memIntrinsicUpdate :: (Instruction, Maybe MemlogOp) -> MaybeSymb ()
-memIntrinsicUpdate (CallInst{ callFunction = ExternalFunctionC func,
-                              callArguments =
-                                  [_, (value, _), (lenValue, _), _, _] },
-                    Just (MemsetOp addr)) = do
+otherUpdate (CallInst{ callFunction = ExternalFunctionC func,
+                       callArguments = [_, (value, _), (lenValue, _), _, _] },
+             Just (MemsetOp addr)) = do
     val <- maybeValueToExpr value
     lenExpr <- maybeValueToExpr lenValue
     len <- case lenExpr of
@@ -539,9 +500,9 @@ memIntrinsicUpdate (CallInst{ callFunction = ExternalFunctionC func,
             | len > 16 -> warning "Array memset"
             | otherwise -> return ()
     exprInsert (MemLoc addr) val
-memIntrinsicUpdate (CallInst{ callFunction = ExternalFunctionC func,
-                              callArguments = [_, _, (lenValue, _), _, _] },
-                    Just (MemcpyOp src dest)) = do
+otherUpdate (CallInst{ callFunction = ExternalFunctionC func,
+                       callArguments = [_, _, (lenValue, _), _, _] },
+             Just (MemcpyOp src dest)) = do
     lenExpr <- maybeValueToExpr lenValue
     len <- case lenExpr of
         ILitExpr len' -> return len'
@@ -553,15 +514,13 @@ memIntrinsicUpdate (CallInst{ callFunction = ExternalFunctionC func,
             | len > 16 -> warning "Array memcpy"
             | otherwise -> return ()
     exprInsert (MemLoc dest) srcExpr
-memIntrinsicUpdate _ = fail ""
+otherUpdate (UnreachableInst{}, _) = warning "UNREACHABLE INSTRUCTION!"
+otherUpdate _ = fail ""
 
-infoUpdaters :: [(Instruction, Maybe MemlogOp) -> MaybeSymb ()]
-infoUpdaters = [ ignoreUpdate,
-                 exprUpdate,
-                 storeUpdate,
-                 controlFlowUpdate,
-                 memIntrinsicUpdate,
-                 failedUpdate ]
+warnInstOp :: Symbolicish m => (Instruction, Maybe MemlogOp) -> m ()
+warnInstOp (inst, op)
+    = warning $ printf "Couldn't process inst '%s' with op %s"
+        (show inst) (show op)
 
 traceInstOp :: (Instruction, Maybe MemlogOp) -> a -> a
 traceInstOp (inst, Just (HelperFuncOp _))
@@ -611,7 +570,8 @@ updateInfo instOp@(inst, _) = do
     whenDebugIP $ traceInstOp instOp $ return ()
     skip <- getSkipRest
     unless skip $ void $ helperFuncUpdate instOp <|>
-        (foldl1 (<||>) infoUpdaters instOp)
+        exprUpdate instOp <|> otherUpdate instOp <|>
+        (warnInstOp instOp >> fail "")
 
 runBlock :: (BasicBlock, InstOpList) -> MaybeSymb (Maybe Expr)
 runBlock (block, instOpList) = do

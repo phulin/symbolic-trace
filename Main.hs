@@ -25,12 +25,13 @@ import System.IO
 import System.IO.Error
 import Text.Printf
 
-import qualified Data.ByteString.Lazy.Char8 as BS
+import qualified Data.ByteString.Char8 as BS
+import qualified Data.ByteString.Lazy.Char8 as BSL
 import qualified Data.List as L
 import qualified Data.Map as M
 import qualified Data.Map.Strict as MS
 import qualified Data.Text as T
-import qualified Data.Text.IO as TIO
+import qualified Data.Text.Encoding as TE
 
 import Data.RESET.Types
 import Eval
@@ -51,7 +52,7 @@ processCmd state s = case parseCmd s of
     Right cmd -> do
         putStrLn $ printf "executing command: %s" (show cmd)
         runReaderT (respond cmd) state
-    where parseCmd = eitherDecode . BS.pack :: String -> Either String Command
+    where parseCmd = eitherDecode . BSL.pack :: String -> Either String Command
 
 respond :: Command -> SymbReader Response
 respond WatchIP{ commandIP = ip,
@@ -64,7 +65,7 @@ process :: SymbolicState -> (Handle, HostName, PortNumber) -> IO ()
 process state (handle, _, _) = do
     putStrLn "Client connected."
     commands <- lines <$> hGetContents handle
-    mapM_ (BS.hPutStrLn handle <=< liftM encode . processCmd state) commands
+    mapM_ (BSL.hPutStrLn handle <=< liftM encode . processCmd state) commands
 
 -- Command line arguments
 opts :: [OptDescr (Options -> Options)]
@@ -135,7 +136,7 @@ main = do
     printf "Loading LLVM module from %s.\n" llvmMod
     theMod <- parseLLVMFile defaultParserOptions llvmMod
     seq theMod $ printf "Parsing execution log from %s.\n" functionLog
-    funcNameList <- T.lines <$> TIO.readFile functionLog
+    funcNameList <- T.lines <$> TE.decodeUtf8 <$> BS.readFile functionLog
     let funcMap = MS.fromList $
             map (\f -> (identifierContent $ functionName f, f)) $
                 moduleDefinedFunctions theMod

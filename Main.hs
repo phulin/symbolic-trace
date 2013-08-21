@@ -158,7 +158,7 @@ main = do
         symbolicTotalFuncs = funcCount,
         symbolicOptions = options
     }
-    let state = execState (runMaybeT $ runBlocks associated) initialState
+    let SymbolicData (_, state) = runSymbolic (runBlocks associated) initialState
     seq state $ putStrLn ""
     unless (null $ warnings state) $ do
         putStrLn "Warnings:"

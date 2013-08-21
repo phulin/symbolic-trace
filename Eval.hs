@@ -1,7 +1,7 @@
 {-# LANGUAGE FlexibleInstances, FlexibleContexts, UndecidableInstances, MultiParamTypeClasses, StandaloneDeriving #-}
 -- Symbolic evaluator for basic blocks
 
-module Eval(Symbolic(..), SymbolicState(..), noSymbolicState, runBlocks, messages, messagesByIP, warnings, showWarning) where
+module Eval(Symbolic(..), SymbolicState(..), noSymbolicState, runBlocks, messages, messagesByIP, warnings, showWarning, SymbolicData(..)) where
 
 import Data.LLVM.Types
 import qualified Data.List as L
@@ -74,7 +74,37 @@ messagesByIP ip SymbolicState{ symbolicMessagesByIP = msgMap }
 
 -- Symbolic is our fundamental monad: it holds state about control flow and
 -- holds our knowledge of machine state.
-type Symbolic = State SymbolicState
+data SymbolicData a = SymbolicData (a, SymbolicState) | Failure String
+newtype Symbolic a = Symbolic { runSymbolic :: SymbolicState -> SymbolicData a }
+
+mapFst :: (a -> b) -> (a, c) -> (b, c)
+mapFst f (x, y) = (f x, y)
+
+instance Functor Symbolic where
+    fmap f m = Symbolic $ \s -> case runSymbolic m s of
+        SymbolicData (x, state) -> SymbolicData (f x, state)
+        Failure e -> Failure e
+
+instance Monad Symbolic where
+    return x = Symbolic $ \s -> SymbolicData (x, s)
+    m >>= f = Symbolic $ \s -> case runSymbolic m s of
+        SymbolicData (x, state) -> runSymbolic (f x) state
+        Failure e -> Failure e
+    fail e = Symbolic $ const $ Failure e
+
+instance Applicative Symbolic where
+    pure = return
+    (<*>) = ap
+
+instance Alternative Symbolic where
+    Symbolic m1 <|> Symbolic m2 = Symbolic $ \s -> case m1 s of
+        SymbolicData (x, state) -> SymbolicData (x, state)
+        Failure _ -> m2 s
+    empty = fail ""
+
+instance MonadState SymbolicState Symbolic where
+    get = Symbolic $ \s -> SymbolicData (s, s)
+    put s = Symbolic $ \_ -> SymbolicData((), s)
 
 class (MonadState SymbolicState m, Functor m) => Symbolicish m where { }
 instance (MonadState SymbolicState m, Functor m) => Symbolicish m
@@ -209,6 +239,7 @@ valueAt loc = exprFindInfo (InputExpr Int64T loc) loc
 -- BuildExpr is a monad for building expressions. It allows us to short-
 -- circuit the computation and just return IrrelevantExpr, and it also allows
 -- us to return detailed errors (for now this is not implemented).
+{-
 data BuildExprM a
     = Irrelevant
     | ErrorI String
@@ -268,6 +299,11 @@ buildExprMToMaybeExpr :: BuildExprM Expr -> Maybe Expr
 buildExprMToMaybeExpr (JustI e) = Just e
 buildExprMToMaybeExpr (ErrorI s) = Nothing
 buildExprMToMaybeExpr Irrelevant = Just IrrelevantExpr
+-}
+type BuildExpr = Symbolic
+irrelevant :: BuildExpr Expr
+irrelevant = return IrrelevantExpr
+buildExprToMaybeExpr = id
 
 maybeToM :: (Monad m) => Maybe a -> m a
 maybeToM (Just x) = return x
@@ -434,7 +470,8 @@ deIntToPtr e = e
 
 -- For info updates that might fail, with the intention of no change
 -- if the monad comes back Nothing.
-type MaybeSymb = MaybeT (Symbolic)
+-- type MaybeSymb = MaybeT (Symbolic)
+type MaybeSymb = Symbolic
 
 exprUpdate :: (Instruction, Maybe MemlogOp) -> MaybeSymb ()
 exprUpdate instOp@(inst, _) = do
@@ -554,13 +591,13 @@ helperFuncUpdate (inst@CallInst{ callArguments = argVals,
 helperFuncUpdate _ = fail ""
 
 progress :: Monad m => Float -> m ()
-progress f = seq (unsafePerformIO $ putStr $ printf "\r%.0f%%" $ 100 * f) $ return ()
+progress f = seq (unsafePerformIO $ putStr $ printf "\r%.2f%%" $ 100 * f) $ return ()
 
 countFunction :: MaybeSymb ()
 countFunction = do
     funcs <- symbolicFuncsProcessed <$> get
     total <- symbolicTotalFuncs <$> get
-    when (funcs `rem` (total `quot` 100) == 0) $ 
+    when (funcs `rem` (total `quot` 10000) == 0) $ 
         progress $ fromIntegral funcs / fromIntegral total
     modify (\s -> s{ symbolicFuncsProcessed = funcs + 1 })
 

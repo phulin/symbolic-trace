@@ -158,11 +158,8 @@ main = do
         symbolicTotalFuncs = funcCount,
         symbolicOptions = options
     }
-    let state = execState (runMaybeT $ runBlocks associated) initialState
+    let (_, state) = runState (runBlocks associated) initialState
     seq state $ putStrLn ""
-    unless (null $ warnings state) $ do
-        putStrLn "Warnings:"
-        putStrLn $ L.intercalate "\n" $ map showWarning $ warnings state
 
     -- Serve requests for data from analysis
     let addr = PortNumber 22022

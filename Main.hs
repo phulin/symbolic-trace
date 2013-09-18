@@ -30,6 +30,7 @@ import qualified Data.ByteString.Lazy.Char8 as BSL
 import qualified Data.List as L
 import qualified Data.Map as M
 import qualified Data.Map.Strict as MS
+import qualified Data.Serialize as S
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
 

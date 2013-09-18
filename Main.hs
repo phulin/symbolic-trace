@@ -131,8 +131,9 @@ main = do
     -- that everything is captured by the progress meter in the main execState.
 
     -- Load LLVM files and dynamic logs
-    let llvmMod = optLogDir options </> "llvm-mod.bc"
-    let functionLog = optLogDir options </> "llvm-functions.log"
+    let logDir = optLogDir options
+    let llvmMod = logDir </> "llvm-mod.bc"
+    let functionLog = logDir </> "llvm-functions.log"
     printf "Loading LLVM module from %s.\n" llvmMod
     theMod <- parseLLVMFile defaultParserOptions llvmMod
     seq theMod $ printf "Parsing execution log from %s.\n" functionLog

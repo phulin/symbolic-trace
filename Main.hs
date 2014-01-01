@@ -16,7 +16,7 @@ import Data.Word
 import Debug.Trace
 import Network
 import System.Console.GetOpt
-import System.Cmd(rawSystem)
+import System.Process(runProcess, waitForProcess)
 import System.Directory(setCurrentDirectory, canonicalizePath)
 import System.Environment(getArgs)
 import System.Exit(ExitCode(..), exitFailure)
@@ -44,28 +44,28 @@ deriving instance Show Response
 
 type SymbReader = ReaderT SymbolicState IO
 
-processCmd :: SymbolicState -> String -> IO Response
-processCmd state s = case parseCmd s of
+processCmd :: String -> IO Response
+processCmd s = case parseCmd s of
     Left err -> do
         putStrLn $ printf "Parse error on %s:\n  %s" (show s) err
         return $ ErrorResponse err
     Right cmd -> do
         putStrLn $ printf "executing command: %s" (show cmd)
-        runReaderT (respond cmd) state
+        respond cmd
     where parseCmd = eitherDecode . BSL.pack :: String -> Either String Command
 
-respond :: Command -> SymbReader Response
+respond :: Command -> IO Response
 respond WatchIP{ commandIP = ip,
                  commandLimit = limit,
                  commandExprOptions = opts }
     = MessagesResponse <$> map (messageMap $ renderExpr opts) <$>
-        take limit <$> asks (messagesByIP ip)
+        take limit <$> messagesByIP ip <$> (parseOptions >>= symbolic ip)
 
-process :: SymbolicState -> (Handle, HostName, PortNumber) -> IO ()
-process state (handle, _, _) = do
+process :: (Handle, HostName, PortNumber) -> IO ()
+process (handle, _, _) = do
     putStrLn "Client connected."
     commands <- lines <$> hGetContents handle
-    mapM_ (BSL.hPutStrLn handle <=< liftM encode . processCmd state) commands
+    mapM_ (BSL.hPutStrLn handle <=< liftM encode . processCmd) commands
 
 -- Command line arguments
 opts :: [OptDescr (Options -> Options)]
@@ -74,20 +74,46 @@ opts =
         (ReqArg (\a o -> o{ optDebugIP = Just $ read a }) "Need IP")
         "Run in debug mode on a given IP; write out trace at that IP."
     , Option ['q'] ["qemu-dir"]
-        (ReqArg (\a o -> o{ optQemuDir = Just a }) "Need dir")
+        (ReqArg (\a o -> o{ optQemuDir = a }) "Need dir")
         "Run QEMU on specified program."
     , Option ['t'] ["qemu-target"]
-        (ReqArg (\a o -> o{ optQemuTarget = a }) "Need triple")
-        "Run specified QEMU target. Default i386-linux-user."
+        (ReqArg (\a o -> o{ optQemuTarget = a }) "Need triple") $
+        "Run specified QEMU target. Default i386-linux-user for user mode " ++
+        "and i386-softmmu for whole-system mode."
+    , Option ['c'] ["qemu-cr3"]
+        (ReqArg (\a o -> o{ optQemuCr3 = Just $ read a }) "Need CR3")
+        "Run QEMU with filtering on a given CR3 (in whole-system mode)."
+    , Option ['r'] ["qemu-replay"]
+        (ReqArg (\a o -> o{ optQemuReplay = Just a }) "Need replay")
+        "Run specified replay in QEMU (exclude filename extension)."
+    , Option [] ["qemu-qcows"]
+        (ReqArg (\a o -> o{ optQemuQcows = Just a }) "Need qcows")
+        "Use specified Qcows2 with QEMU."
     , Option ['d'] ["log-dir"]
         (ReqArg (\a o -> o{ optLogDir = a }) "Need dir")
         "Place or look for QEMU LLVM logs in a given dir."
     ]
 
-runQemu :: String -> String -> String -> [String] -> IO ()
-runQemu dir target logdir prog = do
+data WholeSystemArgs = WSA
+    { wsaCr3 :: Word64
+    , wsaReplay :: FilePath
+    , wsaQcows :: FilePath
+    , wsaTrigger :: Word64
+    }
+
+getWSA :: Options -> Maybe WholeSystemArgs
+getWSA Options{ optQemuCr3 = Just cr3,
+                optQemuReplay = Just replay, 
+                optQemuQcows = Just qcows }
+    = Just $ WSA{ wsaCr3 = cr3, wsaReplay = replay, wsaQcows = qcows,
+        wsaTrigger = error "Trigger not initialized" }
+getWSA _ = Nothing
+
+runQemu :: FilePath -> String -> FilePath -> Maybe WholeSystemArgs -> [String] -> IO ()
+runQemu dir target logdir wsArgs prog = do
     arch <- case map T.unpack $ T.splitOn "-" (T.pack target) of
         [arch, _, _] -> return arch
+        [arch, "softmmu"] -> return arch
         _ -> putStrLn "Bad target triple." >> exitFailure
     -- Make sure we run prog relative to old working dir.
     progShifted <- case prog of
@@ -95,43 +121,47 @@ runQemu dir target logdir prog = do
             progPath <- canonicalizePath progName
             return $ progPath : progArgs
         _ -> return $ error "Need a program to run."
-    -- We HAVE to be in the QEMU dir to run successfully; location of helper
-    -- function bitcode requires it.
-    putStrLn $ printf "Switching to directory %s." dir
-    setCurrentDirectory dir
-    let qemu = target </> printf "qemu-%s" arch
-    let plugin = target </> "panda_plugins" </> "panda_llvm_trace.so"
-    let dirArgs = if logdir == "/tmp" then []
-            else ["-panda-arg", "llvm_trace:base=" ++ logdir]
-    let qemuArgs = ["-panda-plugin", plugin] ++ dirArgs ++ progShifted
+    let qemu = dir </> target </> 
+            if isJust wsArgs -- if in whole-system mode
+                then printf "qemu-system-%s" arch
+                else printf "qemu-%s" arch
+        monitorArgs = ["-monitor", "tcp:localhost:4444,server,nowait"]
+        plugin = target </> "panda_plugins" </> "panda_llvm_trace.so"
+        pluginArgs =
+            ["-panda-plugin", plugin,
+             "-panda-arg", "llvm_trace:base=" ++ logdir]
+        runArgs = case wsArgs of
+            Nothing -> progShifted -- user mode
+            Just (WSA cr3 replay qcows trigger) -> -- whole-system mode
+                ["-m", "2048", qcows, "-replay", replay,
+                 "-panda-arg", printf "llvm_trace:cr3=%x" cr3,
+                 "-panda-arg", printf "llvm_trace:trigger=%x" trigger]
+        qemuArgs = monitorArgs ++ pluginArgs ++ runArgs
     putStrLn $ printf "Running QEMU at %s with args %s..." qemu (show qemuArgs)
-    exitCode <- rawSystem qemu qemuArgs
+    -- Don't pass an environment, and use our stdin/stdout
+    proc <- runProcess qemu qemuArgs (Just dir) Nothing Nothing Nothing Nothing
+    exitCode <- waitForProcess proc
     case exitCode of
         ExitFailure code ->
             putStrLn $ printf "\nQEMU exited with return code %d." code
         ExitSuccess -> putStrLn "Done running QEMU."
 
-main :: IO ()
-main = do
-    hSetBuffering stdout NoBuffering
-    args <- getArgs
-    let (optionFs, nonOptions, optionErrs) = getOpt RequireOrder opts args
-    case optionErrs of
-        [] -> return ()
-        _ -> mapM putStrLn optionErrs >> exitFailure
-    let options = foldl (flip ($)) defaultOptions optionFs
+-- Run a round of symbolic evaluation
+symbolic :: Word64 -> (Options, [String]) -> IO SymbolicState
+symbolic trigger (options, nonOptions) = do
+    let logDir = optLogDir options
+        dir = optQemuDir options
 
     -- Run QEMU if necessary
-    case optQemuDir options of
-        Just dir -> runQemu dir (optQemuTarget options) (optLogDir options)
-            nonOptions
-        Nothing -> return ()
-
-    -- The goal here is to postpone all computation as much as possible, so
-    -- that everything is captured by the progress meter in the main execState.
+    case getWSA options of
+        Just wsa ->
+            runQemu dir (optQemuTarget options) logDir
+                (Just wsa{ wsaTrigger = trigger }) nonOptions
+        Nothing ->
+            runQemu dir (optQemuTarget options) logDir
+                Nothing nonOptions
 
     -- Load LLVM files and dynamic logs
-    let logDir = optLogDir options
     let llvmMod = logDir </> "llvm-mod.bc"
     let functionLog = logDir </> "llvm-functions.log"
     printf "Loading LLVM module from %s.\n" llvmMod
@@ -160,10 +190,23 @@ main = do
         symbolicOptions = options
     }
     let (_, state) = runState (runBlocks associated) initialState
-    seq state $ putStrLn ""
+    seq state $ return state
+
+parseOptions :: IO (Options, [String])
+parseOptions = do
+    args <- getArgs
+    let (optionFs, nonOptions, optionErrs) = getOpt RequireOrder opts args
+    case optionErrs of
+        [] -> return ()
+        _ -> mapM putStrLn optionErrs >> exitFailure
+    return $ (foldl (flip ($)) defaultOptions optionFs, nonOptions)
+
+main :: IO ()
+main = do
+    hSetBuffering stdout NoBuffering
 
     -- Serve requests for data from analysis
     let addr = PortNumber 22022
     sock <- listenOn addr
     putStrLn $ printf "Listening on %s." (show addr)
-    forever $ catchIOError (accept sock >>= process state) $ \e -> print e
+    forever $ catchIOError (accept sock >>= process) $ \e -> print e

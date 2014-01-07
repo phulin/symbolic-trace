@@ -334,7 +334,7 @@ instToExpr (inst@ICmpInst{ cmpPredicate = pred,
                            cmpV2 = val2 }, _)
     = Just $ ICmpExpr pred <$> valueToExpr val1 <*> valueToExpr val2
 instToExpr (inst@LoadInst{ loadAddress = addrValue },
-            Just (AddrMemlogOp LoadOp addrEntry)) = Just $ do
+            Just (MemoryOp LoadOp addrEntry)) = Just $ do
     info <- getInfo
     let typ = exprTOfInst inst
     expr <- case locExpr <$> M.lookup (MemLoc addrEntry) info of
@@ -393,7 +393,7 @@ otherUpdate instOp@(inst, _)
 otherUpdate (inst@StoreInst{ storeIsVolatile = False,
                              storeValue = val,
                              storeAddress = addrValue },
-             (Just (AddrMemlogOp StoreOp addr))) = do
+             (Just (MemoryOp StoreOp addr))) = do
     value <- valueToExpr val
     origin <- deIntToPtr <$> valueToExpr addrValue
     when (interestingOp value addr) $

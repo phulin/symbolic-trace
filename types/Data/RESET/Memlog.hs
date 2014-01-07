@@ -9,23 +9,23 @@ type InstOpList = [(Instruction, Maybe MemlogOp)]
 type MemlogList = [(BasicBlock, InstOpList)]
 
 -- Haskell version of C dynamic log structs
-data MemlogOp = AddrMemlogOp AddrOp AddrEntry |
-                BranchOp Word32 |
-                SelectOp Word32 |
-                SwitchOp Word32 | 
+data MemlogOp = BeginBlockOp Word64 Word64 | -- Translation counter and eip
+                MemoryOp AddrOp AddrEntry |
+                BranchOp Word64 | -- INDEX of branch taken - 0 for true, 1 for false
+                SelectOp Word64 | -- Index of select statement result
+                SwitchOp Word64 | -- Index of switch statement result
                 ExceptionOp |
                 HelperFuncOp MemlogList | -- For calls out to helper functions
                 MemsetOp AddrEntry |
                 MemcpyOp AddrEntry AddrEntry
     deriving (Eq, Ord, Show)
-data AddrOp = LoadOp | StoreOp | BranchAddrOp | SelectAddrOp | SwitchAddrOp
-    deriving (Eq, Ord, Show, Enum)
+data AddrOp = LoadOp | StoreOp
+    deriving (Eq, Ord, Show)
 data AddrEntry = AddrEntry { addrType :: AddrEntryType
                            , addrVal :: Word64
-                           , addrOff :: Word32
                            , addrFlag :: AddrFlag }
     deriving (Eq, Ord, Show)
-data AddrEntryType = HAddr | MAddr | IAddr | LAddr | GReg | GSpec | Unk | Const | Ret
+data AddrEntryType = HAddr | MAddr | IAddr | PAddr | LAddr | GReg | GSpec | Unk | Const | Ret
     deriving (Eq, Ord, Show, Enum)
 data AddrFlag = IrrelevantFlag | NoFlag | ExceptionFlag | ReadlogFlag | FuncargFlag
     deriving (Eq, Ord, Show)

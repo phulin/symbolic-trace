@@ -10,6 +10,7 @@ import Control.Monad.State
 import Control.Monad.Trans(lift)
 import Control.Monad.Trans.Maybe
 import Data.Binary.Get(Get, runGet, getWord32host, getWord64host, skip, getLazyByteString)
+import Data.Bits(shiftR, (.&.))
 import Data.LLVM.Types
 import Data.Maybe(isJust, fromMaybe, catMaybes)
 import Data.Word(Word32, Word64)
@@ -44,45 +45,54 @@ instance Pretty AddrEntry where
     pretty addr = show addr
 
 parseMemlog :: FilePath -> IO [MemlogOp]
-parseMemlog file = runGet (many getMemlogEntry) <$> GZ.decompress <$> B.readFile file
+parseMemlog file = runGet (getTubtfHeader >> many getMemlogEntry) <$> GZ.decompress <$> B.readFile file
+
+getTubtfHeader :: Get ()
+getTubtfHeader = do
+    skip 4 -- tubtf version
+    colw <- getWord32host
+    case colw of
+        0 -> error "Can't process 32-bit tubtf log"
+        1 -> return () -- 64-bit, so we're good.
+    skip 8 -- FIXME: we currently ignore what elements are present - we should check that.
+    skip 4 -- number of rows; we'll just read until EOF.
+
+word :: Get Word64
+word = getWord64host
 
 getMemlogEntry :: Get MemlogOp
 getMemlogEntry = do
-    entryType <- getWord64host
+    cr3 <- word
+    eip <- word
+    entryType <- word
     out <- case entryType of
-        0 -> AddrMemlogOp <$> getAddrOp <*> getAddrEntry
-        1 -> BranchOp <$> getWord32host <* skip 28
-        2 -> SelectOp <$> getWord32host <* skip 28
-        3 -> SwitchOp <$> getWord32host <* skip 28
-        4 -> ExceptionOp <$ skip 32
+        30 -> BeginBlockOp eip <$> word <* skip 24
+        31 -> MemoryOp LoadOp <$> getAddrEntry
+        32 -> MemoryOp StoreOp <$> getAddrEntry
+        33 -> BranchOp <$> word <* skip 24
+        34 -> SelectOp <$> word <* skip 24
+        35 -> SwitchOp <$> word <* skip 24
+        36 -> ExceptionOp <$ skip 32
         _ -> do
             nextBytes <- getLazyByteString 32
             error $ printf "Unknown entry type %d; next bytes %s" entryType (show nextBytes)
     return out
 
-getBool :: Get Bool
-getBool = do
-    word32 <- getWord32host
-    return $ case word32 of
-        0 -> False
-        _ -> True
-
-getAddrOp :: Get AddrOp
-getAddrOp = (toEnum . fromIntegral) <$> getWord64host
-
 getAddrEntry :: Get AddrEntry
-getAddrEntry = AddrEntry <$> ((toEnum . fromIntegral) <$> getWord64host) <*> getWord64host <*> getWord32host <*> getAddrFlag
-
-getAddrFlag :: Get AddrFlag
-getAddrFlag = do
-    addrFlagType <- getWord32host
-    return $ case addrFlagType of
-        5 -> IrrelevantFlag
-        0 -> NoFlag
-        1 -> ExceptionFlag
-        2 -> ReadlogFlag
-        3 -> FuncargFlag
+getAddrEntry = do
+    metadata <- word
+    let typ = toEnum $ fromIntegral $ metadata .&. 0xff
+        flagNum = metadata `shiftR` 8 .&. 0xff
+    flag <- case flagNum of
+        5 -> return IrrelevantFlag
+        0 -> return NoFlag
+        1 -> return ExceptionFlag
+        2 -> return ReadlogFlag
+        3 -> return FuncargFlag
         f -> error ("Parse error in dynamic log: Unexpected flag " ++ show f)
+    val <- word
+    skip 24
+    return $ t $ AddrEntry typ val flag
 
 type MemlogAppList = AppList (BasicBlock, InstOpList)
 
@@ -208,7 +218,7 @@ pairListFind test def list = foldr check def list
               | test key = val
           check _ val = val
 
-findSwitchTarget :: BasicBlock -> Word32 -> [(Value, BasicBlock)] -> BasicBlock
+findSwitchTarget :: BasicBlock -> Word64 -> [(Value, BasicBlock)] -> BasicBlock
 findSwitchTarget defaultTarget idx casesList
     = pairListFind test defaultTarget casesList
     where test (ConstantC (ConstantInt{ constantIntValue = int }))
@@ -227,12 +237,12 @@ associateInst inst
 associateInst inst@LoadInst{} = do
     op <- memlogPopErr inst
     case op of
-        AddrMemlogOp LoadOp _ -> return $ Just op
+        MemoryOp LoadOp _ -> return $ Just op
         _ -> throwError $ printf "Expected LoadOp; got %s" (show op)
 associateInst inst@StoreInst{ storeIsVolatile = False } = do
     op <- memlogPopErr inst
     case op of
-        AddrMemlogOp StoreOp _ -> return $ Just op
+        MemoryOp StoreOp _ -> return $ Just op
         _ -> throwError $ printf "Expected StoreOp; got %s" (show op)
 associateInst inst@SelectInst{} = liftM Just $ memlogPopErr inst
 associateInst inst@BranchInst{} = do
@@ -263,13 +273,13 @@ associateInst inst@CallInst{ callFunction = ExternalFunctionC func,
     | T.pack "llvm.memset." `T.isPrefixOf` name = do
         op <- memlogPopErr inst
         case op of
-            AddrMemlogOp StoreOp addr -> return $ Just $ MemsetOp addr
+            MemoryOp StoreOp addr -> return $ Just $ MemsetOp addr
             _ -> throwError $ printf "Expected store operation (memset)"
     | T.pack "llvm.memcpy." `T.isPrefixOf` name = do
         op1 <- memlogPopErr inst
         op2 <- memlogPopErr inst
         case (op1, op2) of
-            (AddrMemlogOp LoadOp src, AddrMemlogOp StoreOp dest) ->
+            (MemoryOp LoadOp src, MemoryOp StoreOp dest) ->
                 return $ Just $ MemcpyOp src dest
             _ -> throwError $ printf "Expected load and store operation (memcpy)"
     where name = identifierContent $ externalFunctionName func

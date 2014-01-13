@@ -13,11 +13,10 @@ import Data.Binary.Get(Get, runGet, getWord32host, getWord64host, skip, getLazyB
 import Data.Bits(shiftR, (.&.))
 import Data.LLVM.Types
 import Data.Maybe(isJust, fromMaybe, catMaybes)
-import Data.Word(Word32, Word64)
+import Data.Word(Word8, Word32, Word64)
 import Text.Printf(printf)
 import Debug.Trace
 
-import qualified Codec.Compression.GZip as GZ
 import qualified Data.ByteString.Lazy as B
 import qualified Data.Char as C
 import qualified Data.List as L
@@ -46,7 +45,7 @@ instance Pretty AddrEntry where
     pretty addr = show addr
 
 parseMemlog :: FilePath -> IO [MemlogOp]
-parseMemlog file = runGet (getTubtfHeader >> many getMemlogEntry) <$> GZ.decompress <$> B.readFile file
+parseMemlog file = runGet (getTubtfHeader >> many getMemlogEntry) <$> B.readFile file
 
 getTubtfHeader :: Get ()
 getTubtfHeader = do
@@ -76,7 +75,8 @@ getMemlogEntry = do
         36 -> ExceptionOp <$ skip 32
         _ -> do
             nextBytes <- getLazyByteString 32
-            error $ printf "Unknown entry type %d; next bytes %s" entryType (show nextBytes)
+            error $ printf "Unknown entry type %d; next bytes %s" entryType
+                (L.concatMap (printf "%x " :: Word8 -> String) $ B.unpack nextBytes)
     return out
 
 getAddrEntry :: Get AddrEntry

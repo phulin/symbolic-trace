@@ -163,17 +163,8 @@ symbolic trigger (options, nonOptions) = do
 
     -- Load LLVM files and dynamic logs
     let llvmMod = logDir </> "llvm-mod.bc"
-    let functionLog = logDir </> "llvm-functions.log"
     printf "Loading LLVM module from %s.\n" llvmMod
     theMod <- parseLLVMFile defaultParserOptions llvmMod
-    seq theMod $ printf "Parsing execution log from %s.\n" functionLog
-    funcNameList <- T.lines <$> TE.decodeUtf8 <$> BS.readFile functionLog
-    let funcMap = MS.fromList $
-            map (\f -> (identifierContent $ functionName f, f)) $
-                moduleDefinedFunctions theMod
-        findFunc name = fromMaybe (error $ "Couldn't find function " ++ T.unpack name) $ MS.lookup name funcMap
-        funcList = map findFunc funcNameList
-        funcCount = length $ funcNameList
 
     -- Align dynamic log with execution history
     putStrLn "Loading dynamic log."
@@ -181,12 +172,11 @@ symbolic trigger (options, nonOptions) = do
     putStr "Aligning dynamic log data..."
     let associated = associateFuncs memlog theMod
     putStrLn $
-        printf " done.\nRunning symbolic execution analysis with %d functions."
-            funcCount
+        printf " done.\nRunning symbolic execution analysis with FIXME functions."
 
     -- Run symbolic execution analysis
     let initialState = noSymbolicState{
-        symbolicTotalFuncs = funcCount,
+        symbolicTotalFuncs = 1000000000, -- FIXME
         symbolicOptions = options
     }
     let (_, state) = runState (runBlocks associated) initialState

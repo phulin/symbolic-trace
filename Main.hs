@@ -125,7 +125,7 @@ runQemu dir target logdir wsArgs prog = do
             if isJust wsArgs -- if in whole-system mode
                 then printf "qemu-system-%s" arch
                 else printf "qemu-%s" arch
-        monitorArgs = ["-monitor", "tcp:localhost:4444,server,nowait"]
+        otherArgs = ["-tubtf", "-monitor", "tcp:localhost:4444,server,nowait"]
         plugin = target </> "panda_plugins" </> "panda_llvm_trace.so"
         pluginArgs =
             ["-panda-plugin", plugin,
@@ -136,7 +136,7 @@ runQemu dir target logdir wsArgs prog = do
                 ["-m", "2048", qcows, "-replay", replay,
                  "-panda-arg", printf "llvm_trace:cr3=%x" cr3,
                  "-panda-arg", printf "llvm_trace:trigger=%x" trigger]
-        qemuArgs = monitorArgs ++ pluginArgs ++ runArgs
+        qemuArgs = otherArgs ++ pluginArgs ++ runArgs
     putStrLn $ printf "Running QEMU at %s with args %s..." qemu (show qemuArgs)
     -- Don't pass an environment, and use our stdin/stdout
     proc <- runProcess qemu qemuArgs (Just dir) Nothing Nothing Nothing Nothing
@@ -177,9 +177,9 @@ symbolic trigger (options, nonOptions) = do
 
     -- Align dynamic log with execution history
     putStrLn "Loading dynamic log."
-    memlog <- parseMemlog $ optLogDir options </> "llvm-memlog.log"
+    memlog <- parseMemlog $ optLogDir options </> "tubtf.log"
     putStr "Aligning dynamic log data..."
-    let associated = associateFuncs memlog funcList
+    let associated = associateFuncs memlog theMod
     putStrLn $
         printf " done.\nRunning symbolic execution analysis with %d functions."
             funcCount

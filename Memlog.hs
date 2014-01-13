@@ -19,6 +19,7 @@ import Debug.Trace
 
 import qualified Codec.Compression.GZip as GZ
 import qualified Data.ByteString.Lazy as B
+import qualified Data.Char as C
 import qualified Data.List as L
 import qualified Data.Map as M
 import qualified Data.Set as S
@@ -107,7 +108,8 @@ data MemlogState = MemlogState{
     -- (i.e. this is loading code, not something we're actually interested in)
     memlogAssociatedBlocks :: Maybe MemlogAppList,
     memlogNextBlock :: Maybe BasicBlock, -- Next block to process
-    memlogSkipRest :: Bool
+    memlogSkipRest :: Bool,
+    memlogBlockMap :: M.Map Word64 Function
 }
 
 noMemlogState :: MemlogState
@@ -116,7 +118,8 @@ noMemlogState = MemlogState{
     memlogCurrentAssociated = mkAppList,
     memlogAssociatedBlocks = Just mkAppList,
     memlogNextBlock = Nothing,
-    memlogSkipRest = False
+    memlogSkipRest = False,
+    memlogBlockMap = M.empty
 }
 
 class (Functor m, Monad m, MonadState MemlogState m) => Memlogish m where
@@ -286,7 +289,7 @@ associateInst inst@CallInst{ callFunction = ExternalFunctionC func,
 associateInst CallInst{ callFunction = FunctionC func } = do
     opStream <- getOpStream
     let (eitherError, memlogState)
-            = runState (runErrorT $ associateMemlogWithFunc func)
+            = runState (runErrorT $ associateMemlogWithFunc $ Just func)
                 noMemlogState{ memlogOpStream = opStream }
     putOpStream $ memlogOpStream memlogState
     case eitherError of
@@ -302,8 +305,22 @@ associateInst UnreachableInst{} = do
     throwError $ printf "Unreachable instruction; skipRest = %s" (show skip)
 associateInst _ = return Nothing
 
-associateMemlogWithFunc :: Function -> FuncOpContext ()
-associateMemlogWithFunc func = addBlock $ head $ functionBody func
+associateMemlogWithFunc :: Maybe Function -> FuncOpContext ()
+associateMemlogWithFunc maybeFunc = do
+    func <- case maybeFunc of
+        Just func -> return func
+        Nothing -> do
+            op <- fromMaybe (error "No op to begin block") <$> memlogPopMaybe
+            blocks <- memlogAssociatedBlocks <$> get
+            tbCount <- case op of
+                BeginBlockOp eip tbCount -> return tbCount
+                _ -> error $ printf "Expected BeginBlockOp; got %s; previous block %s"
+                    (show op) (fromMaybe "none" $ identifierAsString <$> functionName <$>
+                        basicBlockFunction <$> fst <$> head <$> suffix 1 <$> blocks)
+            blockMap <- memlogBlockMap <$> get
+            return $ M.findWithDefault (error $ printf "Couldn't find block with tbCount %d" tbCount)
+                tbCount blockMap
+    addBlock $ head $ functionBody func
     where addBlock :: BasicBlock -> FuncOpContext ()
           addBlock block = do
               ops <- getOpStream
@@ -314,13 +331,28 @@ associateMemlogWithFunc func = addBlock $ head $ functionBody func
                   Just nextBlock' -> addBlock nextBlock'
                   Nothing -> return ()
 
-associateFuncs :: [MemlogOp] -> [Function] -> MemlogList
-associateFuncs ops funcs = unAppList revMemlog
+associateMemlogWithModule :: Module -> FuncOpContext ()
+associateMemlogWithModule mod = forever assocIfRemaining
+    where assocIfRemaining = do
+              ops <- getOpStream
+              unless (null ops) $ associateMemlogWithFunc Nothing
+
+mkBlockMap :: Module -> M.Map Word64 Function
+mkBlockMap mod = foldl construct M.empty $ moduleDefinedFunctions mod
+    where construct map func = case strippedName func of
+              Just suffix -> M.insert
+                  (read $ takeWhile C.isDigit suffix) func map
+              Nothing -> map
+          strippedName func = L.stripPrefix "tcg-llvm-tb-" $
+              identifierAsString $ functionName func
+
+associateFuncs :: [MemlogOp] -> Module -> MemlogList
+associateFuncs ops mod = unAppList revMemlog
     where revMemlog = fromMaybe (error "No memlog list") maybeRevMemlog
           maybeRevMemlog = memlogAssociatedBlocks $
-              execState (associate funcs) $ noMemlogState{ memlogOpStream = ops }
+              execState (associate mod) $ noMemlogState{ memlogOpStream = ops }
           associate funcs = do
-              result <- runErrorT $ mapM_ associateMemlogWithFunc funcs
+              result <- runErrorT $ associateMemlogWithModule mod
               case result of
                   Right associated -> return associated
                   Left err -> error err

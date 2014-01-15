@@ -92,8 +92,8 @@ getAddrEntry = do
         3 -> return FuncargFlag
         f -> error ("Parse error in dynamic log: Unexpected flag " ++ show f)
     val <- word
-    skip 24
-    return $ t $ AddrEntry typ val flag
+    skip 16
+    return $ AddrEntry typ val flag
 
 type MemlogAppList = AppList (BasicBlock, InstOpList)
 

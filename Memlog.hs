@@ -342,10 +342,11 @@ associateMemlogWithFunc maybeFunc = do
                   Nothing -> return ()
 
 associateMemlogWithModule :: Module -> FuncOpContext ()
-associateMemlogWithModule mod = forever assocIfRemaining
-    where assocIfRemaining = do
-              ops <- getOpStream
-              unless (null ops) $ associateMemlogWithFunc Nothing
+associateMemlogWithModule mod = do
+    ops <- getOpStream
+    unless (null ops) $ do
+        associateMemlogWithFunc Nothing
+        associateMemlogWithModule mod
 
 mkBlockMap :: Module -> M.Map Word64 Function
 mkBlockMap mod = foldl construct M.empty $ moduleDefinedFunctions mod

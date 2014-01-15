@@ -109,7 +109,8 @@ data MemlogState = MemlogState{
     memlogAssociatedBlocks :: Maybe MemlogAppList,
     memlogNextBlock :: Maybe BasicBlock, -- Next block to process
     memlogSkipRest :: Bool,
-    memlogBlockMap :: M.Map Word64 Function
+    memlogBlockMap :: M.Map Word64 Function,
+    memlogInstCount :: Integer
 }
 
 noMemlogState :: MemlogState
@@ -119,7 +120,8 @@ noMemlogState = MemlogState{
     memlogAssociatedBlocks = Just mkAppList,
     memlogNextBlock = Nothing,
     memlogSkipRest = False,
-    memlogBlockMap = M.empty
+    memlogBlockMap = M.empty,
+    memlogInstCount = 0
 }
 
 class (Functor m, Monad m, MonadState MemlogState m) => Memlogish m where
@@ -176,6 +178,9 @@ appendAssociated block = do
 
 skipRest :: Memlogish m => m ()
 skipRest = modify (\s -> s{ memlogSkipRest = True })
+
+countInsts :: Memlogish m => Integer -> m ()
+countInsts n = modify (\s -> s{ memlogInstCount = memlogInstCount s + n })
 
 t x = traceShow x x
 
@@ -326,6 +331,8 @@ associateMemlogWithFunc maybeFunc = do
               ops <- getOpStream
               associated <- associateBasicBlock block
               appendAssociated (block, associated)
+              countInsts $ fromIntegral $ length $
+                  basicBlockInstructions $ block
               nextBlock <- memlogNextBlock <$> get
               case nextBlock of
                   Just nextBlock' -> addBlock nextBlock'
@@ -346,11 +353,14 @@ mkBlockMap mod = foldl construct M.empty $ moduleDefinedFunctions mod
           strippedName func = L.stripPrefix "tcg-llvm-tb-" $
               identifierAsString $ functionName func
 
-associateFuncs :: [MemlogOp] -> Module -> MemlogList
-associateFuncs ops mod = unAppList revMemlog
+-- Returns list of basic blocks in execution order and total number of instructions
+associateFuncs :: [MemlogOp] -> Module -> (MemlogList, Integer)
+associateFuncs ops mod = (unAppList revMemlog, memlogInstCount memlogState) 
     where revMemlog = fromMaybe (error "No memlog list") maybeRevMemlog
-          maybeRevMemlog = memlogAssociatedBlocks $
-              execState (associate mod) $ noMemlogState{ memlogOpStream = ops }
+          maybeRevMemlog = memlogAssociatedBlocks memlogState
+          memlogState = execState (associate mod) $
+              noMemlogState{ memlogOpStream = ops,
+                             memlogBlockMap = mkBlockMap mod }
           associate funcs = do
               result <- runErrorT $ associateMemlogWithModule mod
               case result of

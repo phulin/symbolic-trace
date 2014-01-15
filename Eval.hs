@@ -56,8 +56,8 @@ data SymbolicState = SymbolicState {
         symbolicMessagesByIP :: MS.Map Word64 (AppList (Message Expr)),
         symbolicSkipRest :: Bool,
         symbolicRetVal :: Maybe Expr,
-        symbolicTotalFuncs :: Int,
-        symbolicFuncsProcessed :: Int,
+        symbolicInstCount :: Integer,
+        symbolicInstTotal :: Integer,
         symbolicOptions :: Options
     } deriving Show
 
@@ -191,8 +191,8 @@ noSymbolicState = SymbolicState{
     symbolicMessagesByIP = M.empty,
     symbolicSkipRest = False,
     symbolicRetVal = Nothing,
-    symbolicTotalFuncs = error "Need total instr count.",
-    symbolicFuncsProcessed = 0,
+    symbolicInstCount = 0,
+    symbolicInstTotal = error "No inst total",
     symbolicOptions = defaultOptions
 }
 
@@ -474,26 +474,24 @@ traceInstOp (inst, Nothing) = traceShow inst
 progress :: Monad m => Float -> m ()
 progress f = seq (unsafePerformIO $ putStr $ printf "\r%.2f%%" $ 100 * f) $ return ()
 
-countFunction :: Symbolic ()
-countFunction = do
-    funcs <- symbolicFuncsProcessed <$> get
-    total <- symbolicTotalFuncs <$> get
-    when (funcs `rem` (total `quot` 10000) == 0) $ 
-        progress $ fromIntegral funcs / fromIntegral total
-    modify (\s -> s{ symbolicFuncsProcessed = funcs + 1 })
+countInst :: Symbolic ()
+countInst = do
+    count <- symbolicInstCount <$> get
+    total <- symbolicInstTotal <$> get
+    when (count `rem` (total `quot` 10000) == 0) $ 
+        progress $ fromIntegral count / fromIntegral total
+    modify (\s -> s{ symbolicInstCount = count + 1 })
 
 updateInfo :: (Instruction, Maybe MemlogOp) -> Symbolic ()
 updateInfo instOp@(inst, _) = do
     currentIP <- getCurrentIP
     whenDebugIP $ traceInstOp instOp $ return ()
     skip <- getSkipRest
-    unless skip $ void $ otherUpdate instOp
+    unless skip $ void $ countInst >> otherUpdate instOp
 
 runBlock :: (BasicBlock, InstOpList) -> Symbolic (Maybe Expr)
 runBlock (block, instOpList) = do
     putCurrentFunction $ basicBlockFunction block 
-    when (identifierContent (basicBlockName block) == T.pack "entry")
-        countFunction
     putRetVal Nothing
     clearSkipRest
     mapM updateInfo instOpList

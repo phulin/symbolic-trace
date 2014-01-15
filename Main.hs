@@ -170,13 +170,12 @@ symbolic trigger (options, nonOptions) = do
     putStrLn "Loading dynamic log."
     memlog <- parseMemlog $ optLogDir options </> "tubtf.log"
     putStr "Aligning dynamic log data..."
-    let associated = associateFuncs memlog theMod
-    putStrLn $
-        printf " done.\nRunning symbolic execution analysis with FIXME functions."
+    let (associated, instCount) = associateFuncs memlog theMod
+    putStrLn $ printf " done.\nRunning symbolic execution analysis with %d instructions." instCount
 
     -- Run symbolic execution analysis
     let initialState = noSymbolicState{
-        symbolicTotalFuncs = 1000000000, -- FIXME
+        symbolicInstTotal = instCount,
         symbolicOptions = options
     }
     let (_, state) = runState (runBlocks associated) initialState

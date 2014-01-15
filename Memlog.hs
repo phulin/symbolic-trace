@@ -76,7 +76,7 @@ getMemlogEntry = do
         _ -> do
             nextBytes <- getLazyByteString 32
             error $ printf "Unknown entry type %d; next bytes %s" entryType
-                (L.concatMap (printf "%X " :: Word8 -> String) $ B.unpack nextBytes)
+                (L.concatMap (printf "%02X " :: Word8 -> String) $ B.unpack nextBytes)
     return out
 
 getAddrEntry :: Get AddrEntry

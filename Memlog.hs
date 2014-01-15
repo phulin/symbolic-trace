@@ -239,19 +239,19 @@ findSwitchTarget defaultTarget idx casesList
               | idx == 0 = True
           test _ = False
 
+associateMem :: AddrOp -> Instruction -> FuncOpContext (Maybe MemlogOp)
+associateMem typ inst = do
+    op <- memlogPopErr inst
+    case op of
+        MemoryOp typ' _
+            | typ == typ' -> return $ Just op
+        _ -> throwError $ printf "Expected %s; got %s" (show typ) (show op)
+
 associateInst :: Instruction -> FuncOpContext (Maybe MemlogOp)
 associateInst inst
     | shouldIgnoreInst inst = return Nothing
-associateInst inst@LoadInst{} = do
-    op <- memlogPopErr inst
-    case op of
-        MemoryOp LoadOp _ -> return $ Just op
-        _ -> throwError $ printf "Expected LoadOp; got %s" (show op)
-associateInst inst@StoreInst{ storeIsVolatile = False } = do
-    op <- memlogPopErr inst
-    case op of
-        MemoryOp StoreOp _ -> return $ Just op
-        _ -> throwError $ printf "Expected StoreOp; got %s" (show op)
+associateInst inst@LoadInst{} = associateMem LoadOp inst
+associateInst inst@StoreInst{} = associateMem StoreOp inst
 associateInst inst@SelectInst{} = liftM Just $ memlogPopErr inst
 associateInst inst@BranchInst{} = do
     op <- memlogPopErr inst
@@ -290,7 +290,10 @@ associateInst inst@CallInst{ callFunction = ExternalFunctionC func,
             (MemoryOp LoadOp src, MemoryOp StoreOp dest) ->
                 return $ Just $ MemcpyOp src dest
             _ -> throwError $ printf "Expected load and store operation (memcpy)"
+    | isMMU && T.pack "__ld" `T.isPrefixOf` name = associateMem LoadOp inst
+    | isMMU && T.pack "__st" `T.isPrefixOf` name = associateMem StoreOp inst
     where name = identifierContent $ externalFunctionName func
+          isMMU = T.pack "_mmu_panda" `T.isSuffixOf` name
 associateInst CallInst{ callFunction = FunctionC func } = do
     opStream <- getOpStream
     let (eitherError, memlogState)

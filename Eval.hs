@@ -333,27 +333,37 @@ instToExpr (inst@ICmpInst{ cmpPredicate = pred,
                            cmpV1 = val1,
                            cmpV2 = val2 }, _)
     = Just $ ICmpExpr pred <$> valueToExpr val1 <*> valueToExpr val2
-instToExpr (inst@LoadInst{ loadAddress = addrValue },
-            Just (MemoryOp LoadOp addrEntry)) = Just $ do
-    info <- getInfo
-    let typ = exprTOfInst inst
-    expr <- case locExpr <$> M.lookup (MemLoc addrEntry) info of
-        Just expr -> return expr
-        Nothing -> LoadExpr typ addrEntry <$> generateName typ addrEntry
-    stringIP <- getStringIP
-    origin <- deIntToPtr <$> valueToExpr addrValue
-    when (interestingOp expr addrEntry) $
-        message $ MemoryMessage LoadOp (pretty addrEntry) expr (Just origin)
-    return expr
+instToExpr (inst@LoadInst{ loadAddress = origin }, Just (MemoryOp LoadOp addr))
+    = Just $ loadToExpr (exprTOfInst inst) origin addr
 instToExpr (inst@SelectInst{ selectTrueValue = trueVal,
                              selectFalseValue = falseVal },
             Just (SelectOp selection))
     = Just $ valueToExpr (if selection == 0 then trueVal else falseVal)
 instToExpr _ = Nothing
 
+loadToExpr :: ExprT -> Value -> AddrEntry -> Symbolic Expr
+loadToExpr typ originVal addr = do
+    info <- getInfo
+    expr <- case locExpr <$> M.lookup (MemLoc addr) info of
+        Just expr -> return expr
+        Nothing -> LoadExpr typ addr <$> generateName typ addr
+    stringIP <- getStringIP
+    origin <- deIntToPtr <$> valueToExpr originVal
+    when (interestingOp expr addr) $
+        message $ MemoryMessage LoadOp (pretty addr) expr (Just origin)
+    return expr
+
 deIntToPtr :: Expr -> Expr
 deIntToPtr (IntToPtrExpr _ e) = e
 deIntToPtr e = e
+
+storeUpdate :: Value -> Value -> AddrEntry -> Symbolic ()
+storeUpdate val originVal addr = do
+    value <- valueToExpr val
+    origin <- deIntToPtr <$> valueToExpr originVal
+    when (interestingOp value addr) $
+        message $ MemoryMessage StoreOp (pretty addr) value (Just origin)
+    exprInsert (MemLoc addr) value
 
 exprUpdate :: Instruction -> Expr -> Symbolic ()
 exprUpdate inst expr = do
@@ -363,8 +373,21 @@ exprUpdate inst expr = do
 
 otherUpdate :: (Instruction, Maybe MemlogOp) -> Symbolic ()
 otherUpdate (AllocaInst{}, _) = return ()
-otherUpdate (CallInst{ callFunction = ExternalFunctionC func}, _)
-    | (identifierContent $ externalFunctionName func) == T.pack "log_dynval" = return ()
+otherUpdate (inst@CallInst{ callFunction = ExternalFunctionC func }, _)
+    | T.pack "log_dynval" == name = return ()
+    where name = identifierContent $ externalFunctionName func
+otherUpdate (inst@CallInst{ callArguments = argsWithAttrs,
+                            callFunction = ExternalFunctionC func },
+             Just (MemoryOp op addr)) = do
+    let args = map fst argsWithAttrs
+    case (op, args) of
+        (LoadOp, val : _)
+            | T.pack "__ld" `T.isPrefixOf` name ->
+                loadToExpr (exprTOfInst inst) val addr >>= exprUpdate inst
+        (StoreOp, val : loc : _)
+            | T.pack "__st" `T.isPrefixOf` name -> storeUpdate val loc addr
+        _ -> error $ printf "Bad call load/store: %s" (show inst)
+    where name = identifierContent $ externalFunctionName func
 otherUpdate (inst@CallInst{ callArguments = argVals,
                             callFunction = FunctionC func },
              Just (HelperFuncOp memlog)) = do
@@ -393,12 +416,7 @@ otherUpdate instOp@(inst, _)
 otherUpdate (inst@StoreInst{ storeIsVolatile = False,
                              storeValue = val,
                              storeAddress = addrValue },
-             (Just (MemoryOp StoreOp addr))) = do
-    value <- valueToExpr val
-    origin <- deIntToPtr <$> valueToExpr addrValue
-    when (interestingOp value addr) $
-        message $ MemoryMessage StoreOp (pretty addr) value (Just origin)
-    exprInsert (MemLoc addr) value
+             (Just (MemoryOp StoreOp addr))) = storeUpdate val addrValue addr
 -- This will trigger twice with each IP update, but that's okay because the
 -- second one is the one we want.
 otherUpdate (StoreInst{ storeIsVolatile = True,

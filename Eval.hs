@@ -148,7 +148,7 @@ inUserCode = do
 
 message :: Symbolicish m => Message Expr -> m ()
 message msg = do
-    whenDebugIP $ trace (printf "\t\tMESSAGE: %s" $ show msg) $ return ()
+    --whenDebugIP $ trace (printf "\t\tMESSAGE: %s" $ show msg) $ return ()
     maybeIP <- getCurrentIP
     modify (\s -> s{ symbolicMessages = symbolicMessages s +: (maybeIP, msg) })
     case maybeIP of
@@ -483,9 +483,8 @@ countInst = do
     modify (\s -> s{ symbolicInstCount = count + 1 })
 
 updateInfo :: (Instruction, Maybe MemlogOp) -> Symbolic ()
-updateInfo instOp@(inst, _) = do
-    currentIP <- getCurrentIP
-    whenDebugIP $ traceInstOp instOp $ return ()
+updateInfo instOp = do
+    --whenDebugIP $ traceInstOp instOp $ return ()
     skip <- getSkipRest
     unless skip $ void $ countInst >> otherUpdate instOp
 

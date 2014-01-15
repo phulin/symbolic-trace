@@ -153,13 +153,15 @@ symbolic trigger (options, nonOptions) = do
         dir = optQemuDir options
 
     -- Run QEMU if necessary
-    case getWSA options of
-        Just wsa ->
-            runQemu dir (optQemuTarget options) logDir
-                (Just wsa{ wsaTrigger = trigger }) nonOptions
-        Nothing ->
-            runQemu dir (optQemuTarget options) logDir
-                Nothing nonOptions
+    if isJust $ optDebugIP options
+        then return ()
+        else case getWSA options of
+            Just wsa ->
+                runQemu dir (optQemuTarget options) logDir
+                    (Just wsa{ wsaTrigger = trigger }) nonOptions
+            Nothing ->
+                runQemu dir (optQemuTarget options) logDir
+                    Nothing nonOptions
 
     -- Load LLVM files and dynamic logs
     let llvmMod = logDir </> "llvm-mod.bc"
@@ -190,12 +192,22 @@ parseOptions = do
         _ -> mapM putStrLn optionErrs >> exitFailure
     return $ (foldl (flip ($)) defaultOptions optionFs, nonOptions)
 
-main :: IO ()
-main = do
-    hSetBuffering stdout NoBuffering
-
-    -- Serve requests for data from analysis
+-- Serve requests for data from analysis
+server :: IO ()
+server = do
     let addr = PortNumber 22022
     sock <- listenOn addr
     putStrLn $ printf "Listening on %s." (show addr)
     forever $ catchIOError (accept sock >>= process) $ \e -> print e
+
+main :: IO ()
+main = do
+    hSetBuffering stdout NoBuffering
+
+    (opts, _) <- parseOptions
+    case optDebugIP opts of
+        Nothing -> server
+        Just ip ->
+            print =<< respond WatchIP{ commandIP = ip,
+                                       commandLimit = 10,
+                                       commandExprOptions = defaultExprOptions }

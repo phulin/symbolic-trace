@@ -16,7 +16,6 @@ import Data.Word
 import Debug.Trace
 import Network
 import System.Console.GetOpt
-import System.Process(runProcess, waitForProcess)
 import System.Directory(setCurrentDirectory, canonicalizePath)
 import System.Environment(getArgs)
 import System.Exit(ExitCode(..), exitFailure)
@@ -32,6 +31,7 @@ import qualified Data.Map as M
 import qualified Data.Map.Strict as MS
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
+import qualified System.Process as P
 
 import Data.RESET.Types
 import Eval
@@ -98,19 +98,17 @@ data WholeSystemArgs = WSA
     { wsaCr3 :: Word64
     , wsaReplay :: FilePath
     , wsaQcows :: FilePath
-    , wsaTrigger :: Word64
     }
 
 getWSA :: Options -> Maybe WholeSystemArgs
 getWSA Options{ optQemuCr3 = Just cr3,
                 optQemuReplay = Just replay, 
                 optQemuQcows = Just qcows }
-    = Just $ WSA{ wsaCr3 = cr3, wsaReplay = replay, wsaQcows = qcows,
-        wsaTrigger = error "Trigger not initialized" }
+    = Just $ WSA{ wsaCr3 = cr3, wsaReplay = replay, wsaQcows = qcows }
 getWSA _ = Nothing
 
-runQemu :: FilePath -> String -> FilePath -> Maybe WholeSystemArgs -> [String] -> IO ()
-runQemu dir target logdir wsArgs prog = do
+runQemu :: FilePath -> String -> FilePath -> Word64 -> Maybe WholeSystemArgs -> [String] -> IO ()
+runQemu dir target logdir trigger wsArgs prog = do
     arch <- case map T.unpack $ T.splitOn "-" (T.pack target) of
         [arch, _, _] -> return arch
         [arch, "softmmu"] -> return arch
@@ -126,21 +124,40 @@ runQemu dir target logdir wsArgs prog = do
                 then printf "qemu-system-%s" arch
                 else printf "qemu-%s" arch
         otherArgs = ["-tubtf", "-monitor", "tcp:localhost:4444,server,nowait"]
-        plugin = target </> "panda_plugins" </> "panda_llvm_trace.so"
-        pluginArgs =
-            ["-panda-plugin", plugin,
-             "-panda-arg", "llvm_trace:base=" ++ logdir]
+        findPlugin = target </> "panda_plugins" </> "panda_findeip.so"
+        findArgs =
+            ["-panda-plugin", findPlugin,
+             "-panda-arg", printf "findeip:eip=%x" trigger]
         runArgs = case wsArgs of
             Nothing -> progShifted -- user mode
-            Just (WSA cr3 replay qcows trigger) -> -- whole-system mode
-                ["-m", "2048", qcows, "-replay", replay,
-                 "-panda-arg", printf "llvm_trace:cr3=%x" cr3,
-                 "-panda-arg", printf "llvm_trace:trigger=%x" trigger]
-        qemuArgs = otherArgs ++ pluginArgs ++ runArgs
-    putStrLn $ printf "Running QEMU at %s with args %s..." qemu (show qemuArgs)
+            Just (WSA cr3 replay qcows) -> -- whole-system mode
+                ["-m", "2048", qcows, "-replay", replay]
+        qemuFindArgs = otherArgs ++ findArgs ++ runArgs
+
+    putStrLn $ printf "Running QEMU at %s with args %s..." qemu (show qemuFindArgs)
     -- Don't pass an environment, and use our stdin/stdout
-    proc <- runProcess qemu qemuArgs (Just dir) Nothing Nothing Nothing Nothing
-    exitCode <- waitForProcess proc
+    (_, Just out, _, procHandle) <- P.createProcess $
+        (P.proc qemu qemuFindArgs){ P.cwd = Just dir, P.std_out = P.CreatePipe }
+    exitCode <- P.waitForProcess procHandle
+    output <- lines <$> hGetContents out
+
+    let fracS = last $ catMaybes $ map (L.stripPrefix "REPLAYFRAC=") output
+        tracePlugin = target </> "panda_plugins" </> "panda_llvm_trace.so"
+        traceArgs =
+            ["-panda-plugin", tracePlugin,
+             "-panda-arg", printf "llvm_trace:base=%s" logdir,
+             "-panda-arg", printf "llvm_trace:rfrac=%s" fracS]
+            ++ case wsArgs of
+                Just (WSA cr3 _ _) ->
+                    ["-panda-arg", printf "llvm_trace:cr3=%x" cr3]
+                Nothing -> []
+        qemuTraceArgs = otherArgs ++ traceArgs ++ runArgs
+
+    putStrLn $ printf "Running QEMU at %s with args %s..." qemu (show qemuTraceArgs)
+    (_, _, _, procHandle2) <- P.createProcess $
+        (P.proc qemu qemuTraceArgs){ P.cwd = Just dir }
+    exitCode2 <- P.waitForProcess procHandle2
+
     case exitCode of
         ExitFailure code ->
             putStrLn $ printf "\nQEMU exited with return code %d." code
@@ -155,13 +172,9 @@ symbolic trigger (options, nonOptions) = do
     -- Run QEMU if necessary
     if isJust $ optDebugIP options
         then return ()
-        else case getWSA options of
-            Just wsa ->
-                runQemu dir (optQemuTarget options) logDir
-                    (Just wsa{ wsaTrigger = trigger }) nonOptions
-            Nothing ->
-                runQemu dir (optQemuTarget options) logDir
-                    Nothing nonOptions
+        else
+            runQemu dir (optQemuTarget options) logDir trigger
+                (getWSA options) nonOptions
 
     -- Load LLVM files and dynamic logs
     let llvmMod = logDir </> "llvm-mod.bc"
@@ -207,7 +220,8 @@ main = do
     (opts, _) <- parseOptions
     case optDebugIP opts of
         Nothing -> server
-        Just ip ->
-            print =<< respond WatchIP{ commandIP = ip,
-                                       commandLimit = 10,
-                                       commandExprOptions = defaultExprOptions }
+        Just ip -> do
+            response <- respond WatchIP{ commandIP = ip,
+                                         commandLimit = 10,
+                                         commandExprOptions = defaultExprOptions }
+            printf "\n%s\n" $ show response

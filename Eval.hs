@@ -215,6 +215,7 @@ valueToExpr :: Value -> Symbolic Expr
 valueToExpr (ConstantC UndefValue{}) = return UndefinedExpr
 valueToExpr (ConstantC (ConstantFP _ _ value)) = return $ FLitExpr value 
 valueToExpr (ConstantC (ConstantInt _ _ value)) = return $ ILitExpr value
+valueToExpr (ConstantC ConstantPointerNull{}) = return $ ILitExpr 0
 valueToExpr (ConstantC (ConstantValue{ constantInstruction = inst }))
     = fromMaybe (error "non-expr inst in valueToExpr" ) $ instToExpr (inst, Nothing)
 valueToExpr (InstructionC inst) = do
@@ -375,6 +376,7 @@ otherUpdate :: (Instruction, Maybe MemlogOp) -> Symbolic ()
 otherUpdate (AllocaInst{}, _) = return ()
 otherUpdate (inst@CallInst{ callFunction = ExternalFunctionC func }, _)
     | T.pack "log_dynval" == name = return ()
+    | T.pack "rr_" `T.isPrefixOf` name = return ()
     where name = identifierContent $ externalFunctionName func
 otherUpdate (inst@CallInst{ callArguments = argsWithAttrs,
                             callFunction = ExternalFunctionC func },
@@ -388,6 +390,10 @@ otherUpdate (inst@CallInst{ callArguments = argsWithAttrs,
             | T.pack "__st" `T.isPrefixOf` name -> storeUpdate val loc addr
         _ -> error $ printf "Bad call load/store: %s" (show inst)
     where name = identifierContent $ externalFunctionName func
+otherUpdate (inst@CallInst{ callFunction = FunctionC func },
+             Just (HelperFuncOp _))
+    | T.pack "cpu_x86_update_cr3_llvm" == name = return () -- skip CR3 updates
+    where name = identifierContent $ functionName func
 otherUpdate (inst@CallInst{ callArguments = argVals,
                             callFunction = FunctionC func },
              Just (HelperFuncOp memlog)) = do

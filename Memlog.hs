@@ -205,9 +205,9 @@ associateBasicBlock block = do
               Just associatedBlocks <- memlogAssociatedBlocks <$> get
               throwError $ printf
                   ("Error during alignment.\n\n" ++
-                      "Previous block:\n%s\n\nCurrent block:\n%s\n%s\n\n" ++
+                      "Previous blocks:\n%s\n\nCurrent block:\n%s\n%s\n\n" ++
                       "Next ops:\n%s\n\nError: %s")
-                  (L.intercalate "\n\n" $ map showBlock $ suffix 1 associatedBlocks)
+                  (L.intercalate "\n\n" $ map showBlock $ suffix 3 associatedBlocks)
                   (showBlock (block, unAppList currentAssociated))
                   (show inst)
                   (L.intercalate "\n" $ map show $ take 5 ops)
@@ -313,6 +313,7 @@ associateInst UnreachableInst{} = do
     throwError $ printf "Unreachable instruction; skipRest = %s" (show skip)
 associateInst _ = return Nothing
 
+-- If argument is Nothing, pull a func out of the OpStream
 associateMemlogWithFunc :: Maybe Function -> FuncOpContext ()
 associateMemlogWithFunc maybeFunc = do
     func <- case maybeFunc of
@@ -322,7 +323,7 @@ associateMemlogWithFunc maybeFunc = do
             blocks <- memlogAssociatedBlocks <$> get
             tbCount <- case op of
                 BeginBlockOp eip tbCount -> return tbCount
-                _ -> error $ printf "Expected BeginBlockOp; got %s; previous block %s"
+                _ -> throwError $ printf "Expected BeginBlockOp; got %s; previous block %s"
                     (show op) (fromMaybe "none" $ identifierAsString <$> functionName <$>
                         basicBlockFunction <$> fst <$> head <$> suffix 1 <$> blocks)
             blockMap <- memlogBlockMap <$> get
@@ -331,7 +332,6 @@ associateMemlogWithFunc maybeFunc = do
     addBlock $ head $ functionBody func
     where addBlock :: BasicBlock -> FuncOpContext ()
           addBlock block = do
-              ops <- getOpStream
               associated <- associateBasicBlock block
               appendAssociated (block, associated)
               countInsts $ fromIntegral $ length $
